@@ -10,7 +10,7 @@ import seaborn as sns
 from sklearn.metrics import roc_auc_score, roc_curve
 from sklearn.linear_model import LogisticRegression
 import scipy.stats as stats
-from common_utils import gcs_path_exists, get_gcs_fs
+from utils import gcs_path_exists, get_gcs_fs
 
 def main():
     parser = argparse.ArgumentParser(description="Analyze and visualize PRS results for a single model.")
