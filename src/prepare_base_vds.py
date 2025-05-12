@@ -5,7 +5,7 @@ import sys
 import time
 import pandas as pd
 import hail as hl
-from common_utils import (
+from utils import (
     init_hail, gcs_path_exists, hail_path_exists, delete_gcs_path,
     cache_result, get_gcs_fs, get_cache_dir
 )
