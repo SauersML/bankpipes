@@ -21,7 +21,7 @@ import os
 import sys
 import pandas as pd
 import hail as hl
-from common_utils import (
+from utils import (
     init_hail,
     get_gcs_fs,
     gcs_path_exists,
