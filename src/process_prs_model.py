@@ -74,7 +74,7 @@ def prepare_weight_table(harmonized_path: str, prs_id: str) -> pd.DataFrame | No
         print(f"[{prs_id}] Selecting and cleaning required columns: {cols_to_keep}")
         score_df = score_df[cols_to_keep].copy() # Use copy to avoid SettingWithCopyWarning
 
-        # Ensure string types for alleles and chr before cleaning numerics
+        # string types for alleles and chr before cleaning numerics
         score_df['chr'] = score_df['chr'].astype(str)
         score_df['effect_allele'] = score_df['effect_allele'].astype(str)
         if 'other_allele' in score_df.columns:
@@ -111,9 +111,9 @@ def prepare_weight_table(harmonized_path: str, prs_id: str) -> pd.DataFrame | No
 
         # Add Hail-compatible columns
         print(f"[{prs_id}] Adding Hail-compatible columns: contig, position")
-        # Ensure chr prefixes are handled
+        # chr prefixes are handled
         score_df['contig'] = score_df['chr'].apply(lambda c: c if c.startswith('chr') else f'chr{c}')
-        # Ensure only valid contigs remain (e.g., chr1-22, chrX, chrY, chrM) - basic check example
+        # only valid contigs remain (e.g., chr1-22, chrX, chrY, chrM) - basic check example
         valid_contigs = {f'chr{i}' for i in range(1, 23)} | {'chrX', 'chrY', 'chrM'}
         original_count = len(score_df)
         score_df = score_df[score_df['contig'].isin(valid_contigs)]
@@ -324,7 +324,7 @@ def calculate_effect_allele_dosage(mt_row):
     Calculates effect allele dosage from Hail MatrixTable row.
     Assumes mt_row contains .alleles, .GT, and .prs.effect_allele fields.
     """
-    # Ensure required fields are present (add checks if needed upstream)
+    # required fields are present (add checks if needed upstream)
     eff_allele = hl.str(mt_row.prs.effect_allele) # Get effect allele from annotated prs info
     ref_allele = mt_row.alleles[0]
 
@@ -374,7 +374,7 @@ def annotate_and_score(vds_filtered: hl.vds.VariantDataset, prs_ht: hl.Table, pr
 
     print(f"[{prs_id}] Annotating VDS with PRS info and computing scores...")
     try:
-        # Ensure PRS HT is not empty before proceeding
+        # PRS HT is not empty before proceeding
         if prs_ht.count() == 0:
             print(f"[{prs_id}] ERROR: Input PRS HailTable for annotation is empty. Cannot annotate.")
             return None
@@ -402,7 +402,7 @@ def annotate_and_score(vds_filtered: hl.vds.VariantDataset, prs_ht: hl.Table, pr
 
         # Calculate dosage using the correct function
         print(f"[{prs_id}] Calculating effect allele dosage...")
-        mt = mt.unfilter_entries() # Ensure GT is available for all samples at these variants
+        mt = mt.unfilter_entries() # GT is available for all samples at these variants
         mt = mt.annotate_entries(effect_allele_count=calculate_effect_allele_dosage(mt)) # Pass the row context
 
         # Calculate per-variant contribution, handling missing dosage or weight
@@ -465,7 +465,7 @@ def save_ht_and_csv(ht_scores: hl.Table | None, hail_table_gcs_path: str, score_
 
     print(f"[{prs_id}] Preparing to save scores...")
     try:
-        # Ensure parent directories exist on GCS
+        # parent directories exist on GCS
         parent_ht_dir = os.path.dirname(hail_table_gcs_path)
         parent_csv_dir = os.path.dirname(score_csv_gcs_path)
         if not gcs_path_exists(parent_ht_dir): fs.mkdirs(parent_ht_dir, exist_ok=True)
@@ -544,16 +544,23 @@ def main():
             print(f"[{prs_id}] FATAL: Download failed.")
             sys.exit(1)
 
-        # Prepare DataFrame
-        print(f"[{prs_id}] Preparing weight table DataFrame...")
-        score_df_prepared = prepare_weight_table(local_downloaded_path, prs_id)
-        # Clean up local downloaded file immediately after use
-        if os.path.exists(local_downloaded_path):
-            os.remove(local_downloaded_path)
+        score_df_prepared = None # Initialize before try block
+        try:
+            # Prepare DataFrame
+            print(f"[{prs_id}] Preparing weight table DataFrame...")
+            score_df_prepared = prepare_weight_table(local_downloaded_path, prs_id)
+            if score_df_prepared is None:
+                print(f"[{prs_id}] FATAL: Weight table preparation failed.")
+                sys.exit(1) # Exit if preparation fails
 
-        if score_df_prepared is None:
-            print(f"[{prs_id}] FATAL: Weight table preparation failed.")
-            sys.exit(1)
+        finally:
+            # cleanup of the downloaded file regardless of preparation success/failure
+            if local_downloaded_path and os.path.exists(local_downloaded_path):
+                print(f"[{prs_id}] Cleaning up local downloaded file: {local_downloaded_path}")
+                try:
+                    os.remove(local_downloaded_path)
+                except OSError as e:
+                    print(f"[{prs_id}] WARNING: Could not remove local file {local_downloaded_path}: {e}")
 
         # Save/Upload Weights (if missing)
         if not weight_table_exists:
