@@ -13,22 +13,28 @@ import scipy.stats as stats
 from utils import gcs_path_exists, get_gcs_fs
 
 def main():
+    # Define expected arguments for analyzing a single model's results
     parser = argparse.ArgumentParser(description="Analyze and visualize PRS results for a single model.")
-    parser.add_argument("--prs_id", required=True, help="PGS ID of the model.")
-    parser.add_argument("--score_csv_gcs_path", required=True, help="GCS path to the calculated PRS scores CSV for this model.")
-    parser.add_argument("--phenotype_name", required=True, help="Name of the target phenotype.")
-    # This script needs the *full cohort list* and the *phenotype cases list* to define cases and controls accurately
-    parser.add_argument("--wgs_ehr_ids_gcs_path", required=True, help="GCS path to the CSV containing all WGS+EHR sample IDs ('s' column).")
-    parser.add_argument("--phenotype_cases_csv_gcs_path", required=True, help="GCS path to the CSV containing phenotype case sample IDs ('s', 'phenotype_status' columns).")
-    parser.add_argument("--gcs_base_output_dir_run", required=True, help="GCS base output directory for this specific run (for plots and standardized scores).")
-    parser.add_argument("--run_timestamp", required=True, help="Run timestamp (YYYYMMDD_HHMMSS).")
+    parser.add_argument("--prs_id", required=True, help="PGS ID of the model (e.g., PGS000123).")
+    parser.add_argument("--prs_phenotype_label", required=True, help="Phenotype label for this PGS model (e.g., 'Ischemic Stroke') used for plots.")
+    parser.add_argument("--score_csv_gcs_path", required=True, help="GCS path to the calculated PRS scores CSV for this specific model.")
+    parser.add_argument("--wgs_ehr_ids_gcs_path", required=True, help="GCS path to the CSV containing all WGS+EHR sample IDs ('s' column) used for the VDS.")
+    parser.add_argument("--phenotype_cases_csv_gcs_path", required=True, help="GCS path to the CSV containing all phenotype case sample IDs ('s', 'phenotype_status' columns) for the target condition.")
+    parser.add_argument("--phenotype_name", required=True, help="Name of the target phenotype condition being analyzed against (e.g., 'Ischemic Stroke').")
+    parser.add_argument("--gcs_base_output_dir_run", required=True, help="GCS base output directory for this specific pipeline run (used for saving plots, standardized scores, etc.).")
+    parser.add_argument("--run_timestamp", required=True, help="Pipeline run timestamp (YYYYMMDD_HHMMSS), used for unique local directories if needed.")
+    parser.add_argument("--project_bucket", required=True, help="GCS project bucket (gs://your-bucket), used for context if needed.")
+    parser.add_argument("--output_summary_file_name", required=True, help="Local file name to write the analysis summary statistics.")
 
     args = parser.parse_args()
-    prs_id = args.prs_id
-    target_phenotype_name = args.phenotype_name
-    phenotype_col_name = f"{target_phenotype_name.replace(' ', '_')}_status" # Consistent column name
 
-    fs = get_gcs_fs() # Initialize GCS
+    # Assign arguments to variables for clarity
+    prs_id = args.prs_id
+    model_phenotype_label = args.prs_phenotype_label # Label specific to the model (from models.csv)
+    target_phenotype_name = args.phenotype_name # The condition being predicted
+    phenotype_col_name = f"{target_phenotype_name.replace(' ', '_')}_status" # Standardized column name for phenotype status
+
+    fs = get_gcs_fs() # Initialize GCS filesystem from utils
 
     print(f"\n------- Analyzing Results for PRS Model: {prs_id} ({target_phenotype_name}) -------")
     analysis_start_time = datetime.datetime.now()
