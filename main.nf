@@ -33,9 +33,10 @@ log.info """
   --- Execution ---
   Executor             : ${workflow.executor}
   Containerization     : Disabled (Bare Metal)
-  Max Spark Forks      : ${params.max_spark_forks}
+  Conda Env Mgmt       : Enabled (Use Mamba: ${params.use_mamba})
+  Conda Cache          : ${params.conda_cache_dir}
 ============================================
-"""
+""" // Updated summary
 
 workflow.onStart {
     log.info "Starting PGS Analysis Workflow: ${workflow.runName}"
@@ -66,7 +67,7 @@ model_info_ch.count().subscribe { count -> log.info "Found ${count} models to pr
 
 process fetch_phenotype_cases {
     tag "Fetch Pheno: ${params.target_phenotype_name}"
-    label 'python_bq_env' // Specific, lighter environment
+    label 'python_bq_env' // Uses BQ, pandas, gcsfs etc. -> Use the lighter Conda env
 
     publishDir "${params.output_dir_base}/${workflow.runName}/logs/01_fetch_pheno", mode:'copy', overwrite:true, pattern: '*.{log,txt}'
 
@@ -77,7 +78,8 @@ process fetch_phenotype_cases {
     def gcs_pheno_out_path = "${params.gcs_temp_dir_base}/phenotype_data/${params.target_phenotype_name.replace(' ','_')}_cases.csv"
     """
     echo "INFO: Fetching phenotype data for '${params.target_phenotype_name}'..."
-    python3 ${projectDir}/src/fetch_phenotypes.py \\
+    # Use 'python' which will resolve to the one in the activated Conda env
+    python ${projectDir}/src/fetch_phenotypes.py \\
         --phenotype_name                "${params.target_phenotype_name}" \\
         --phenotype_concept_ids         "${params.phenotype_concept_ids.join(',')}" \\
         --workspace_cdr                 "${System.getenv('WORKSPACE_CDR')}" \\
@@ -92,8 +94,8 @@ process fetch_phenotype_cases {
 
 process prepare_base_vds {
     tag "Prepare Base VDS"
-    label 'pyhail_env'
-    label 'spark_job'
+    label 'pyhail_env'  // Needs Hail, pandas, BQ utils -> Use the full Conda env
+    label 'spark_job' // Needs Spark environment variables
 
     publishDir "${params.output_dir_base}/${workflow.runName}/logs/02_prepare_vds", mode:'copy', overwrite:true, pattern: '*.{log,txt}'
 
@@ -112,7 +114,8 @@ process prepare_base_vds {
     echo "INFO: Preparing Base VDS..."
     echo "INFO: Using Phenotype Cases CSV from GCS path: ${pheno_input_gcs_path}"
 
-    python3 ${projectDir}/src/prepare_base_vds.py \\
+    # Use 'python' which will resolve to the one in the activated Conda env
+    python ${projectDir}/src/prepare_base_vds.py \\
         --project_bucket                    "${System.getenv('WORKSPACE_BUCKET')}" \\
         --workspace_cdr                     "${System.getenv('WORKSPACE_CDR')}" \\
         --run_timestamp                     "${workflow.runName}" \\
@@ -123,7 +126,7 @@ process prepare_base_vds {
         --base_cohort_vds_path_out          "${gcs_vds_out_path}" \\
         --wgs_ehr_ids_gcs_path_out          "${gcs_ids_out_path}" \\
         --target_phenotype_name             "${params.target_phenotype_name}" \\
-        --phenotype_concept_ids             "${params.phenotype_concept_ids.join(',')}" \\
+        --phenotype_cases_gcs_path_input    "${pheno_input_gcs_path}" \\
         ${params.enable_downsampling_for_vds_generation ? '--enable_downsampling_for_vds' : ''} \\
         --n_cases_downsample                ${params.n_cases_downsample} \\
         --n_controls_downsample             ${params.n_controls_downsample} \\
@@ -138,8 +141,8 @@ process prepare_base_vds {
 
 process process_prs_model {
     tag "Process PRS: ${model.id}"
-    label 'pyhail_env'
-    label 'spark_job'
+    label 'pyhail_env' // Needs Hail, pandas, requests -> Use the full Conda env
+    label 'spark_job' // Needs Spark environment variables
 
     publishDir "${params.output_dir_base}/${workflow.runName}/scores/${model.id}/logs_calculation", mode:'copy', overwrite:true, pattern: '*.{log,txt}'
 
@@ -159,7 +162,8 @@ process process_prs_model {
     echo "INFO: Processing PRS model ${model.id}..."
     echo "INFO: Using Base VDS from GCS path: ${base_vds_path}"
 
-    python3 ${projectDir}/src/process_prs_model.py \\
+    # Use 'python' which will resolve to the one in the activated Conda env
+    python ${projectDir}/src/process_prs_model.py \\
         --prs_id                            "${model.id}" \\
         --prs_url                           "${model.url}" \\
         --base_cohort_vds_path              "${base_vds_path}" \\
@@ -177,7 +181,7 @@ process process_prs_model {
 
 process analyze_one_model_results {
     tag "Analyze: ${model.id} for ${params.target_phenotype_name}"
-    label 'pyhail_env' // Needs pandas, sklearn, viz libs (same as Hail for simplicity now)
+    label 'pyhail_env' // Needs pandas, sklearn, viz libs -> Use the full Conda env
 
     publishDir "${params.output_dir_base}/${workflow.runName}/scores/${model.id}/analysis_results", mode:'copy', overwrite:true, pattern: '*.{log,png,txt}'
 
@@ -200,7 +204,8 @@ process analyze_one_model_results {
     echo "INFO: WGS+EHR IDs GCS path: ${wgs_ehr_ids_path}"
     echo "INFO: Phenotype Cases GCS path: ${pheno_cases_path}"
 
-    python3 ${projectDir}/src/analyze_prs_results.py \\
+    # Use 'python' which will resolve to the one in the activated Conda env
+    python ${projectDir}/src/analyze_prs_results.py \\
         --prs_id                       "${model.id}" \\
         --prs_phenotype_label          "${model.phenotype_label}" \\
         --score_csv_gcs_path           "${score_csv_path}" \\
@@ -273,9 +278,10 @@ workflow.onComplete {
       Launch Dir  : ${workflow.launchDir}
       Run Output  : ${params.output_dir_base}/${workflow.runName}
       Temp Files  : ${params.gcs_temp_dir_base}
+      Conda Cache : ${params.conda_cache_dir}
       Collected analysis summaries (if successful): ${summary_file} (local path may vary if not using local executor for final collection)
     ============================================
-    """.stripIndent()
+    """.stripIndent() // Updated summary
 }
 
 workflow.onError {
