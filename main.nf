@@ -45,43 +45,36 @@ workflow.onStart {
 // Channels
 // ----------------------------------------------------------------------------
 
-// Create a channel emitting model information parsed from the input CSV file
 Channel
     .fromPath(params.models_csv)
     .ifEmpty { error "Models CSV file not found or empty: ${params.models_csv}" }
-    .splitCsv(header:true, sep:',') // Assumes comma separated with header
+    .splitCsv(header:true, sep:',')
     .map { row ->
-        // Basic validation
-        if (!row.id || !row.url) {
-            error "Invalid row in models CSV: ${row}. Requires 'id' and 'url' columns."
+        if (!row.id || !row.url || !row.phenotype) { // Added phenotype for plotting label
+            error "Invalid row in models CSV: ${row}. Requires 'id', 'url', and 'phenotype' columns."
         }
-        // Create a map for each model
-        [ id: row.id.trim(), url: row.url.trim() ]
+        [ id: row.id.trim(), url: row.url.trim(), phenotype_label: row.phenotype.trim() ]
     }
-    .set { model_channel } // Output channel: model_channel = [ [id:'PGS...', url:'...'], ... ]
+    .set { model_info_ch } // Channel emits: [ id:'PGS...', url:'...', phenotype_label:'Ischemic Stroke' ]
 
-// Log the number of models found
-model_channel.count().subscribe { count -> log.info "Found ${count} models to process from ${params.models_csv}" }
+model_info_ch.count().subscribe { count -> log.info "Found ${count} models to process from ${params.models_csv}" }
 
 
 // ----------------------------------------------------------------------------
 // Processes
 // ----------------------------------------------------------------------------
 
-// 1) Fetch phenotype cases from BigQuery (run once)
-//    Uses BQ client, Pandas. Needs Python environment.
 process fetch_phenotype_cases {
     tag "Fetch Pheno: ${params.target_phenotype_name}"
-    label 'pyhail_env' // Apply beforeScript for Python packages
+    label 'python_bq_env' // Specific, lighter environment
 
-    publishDir "${workflow.launchDir}/results/01_fetch_pheno", mode:'copy', overwrite:true, pattern: '*'
+    publishDir "${params.output_dir_base}/${workflow.runName}/logs/01_fetch_pheno", mode:'copy', overwrite:true, pattern: '*.{log,txt}'
 
     output:
-    path "phenotype_cases_gcs_path.txt", emit: pheno_gcs_path_file // File containing the GCS path to the CSV
+    path "phenotype_cases_gcs_path.txt", emit: pheno_cases_gcs_path_file
 
     script:
-    // Define the expected GCS output path for the phenotype CSV
-    def gcs_pheno_out_path = "${params.gcs_temp_dir_base}/phenotype_cases/${params.target_phenotype_name.replace(' ','_')}_cases.csv"
+    def gcs_pheno_out_path = "${params.gcs_temp_dir_base}/phenotype_data/${params.target_phenotype_name.replace(' ','_')}_cases.csv"
     """
     echo "INFO: Fetching phenotype data for '${params.target_phenotype_name}'..."
     python3 ${projectDir}/src/fetch_phenotypes.py \\
@@ -89,44 +82,35 @@ process fetch_phenotype_cases {
         --phenotype_concept_ids         "${params.phenotype_concept_ids.join(',')}" \\
         --workspace_cdr                 "${System.getenv('WORKSPACE_CDR')}" \\
         --output_phenotype_csv_gcs_path "${gcs_pheno_out_path}" \\
-        --project_bucket                "${System.getenv('WORKSPACE_BUCKET')}"
+        --project_bucket                "${System.getenv('WORKSPACE_BUCKET')}" \\
+        > fetch_phenotypes.log 2>&1
 
-    # Record the GCS path to the output file for downstream processes
-    echo "INFO: Phenotype data saved to GCS: ${gcs_pheno_out_path}"
     echo "${gcs_pheno_out_path}" > phenotype_cases_gcs_path.txt
     echo "INFO: Phenotype GCS path recorded in phenotype_cases_gcs_path.txt"
     """
 }
 
-// 2) Prepare Base VDS (run once)
-//    Uses Hail/Spark, Pandas, BQ client. Needs Python+Hail env and Spark resource limits.
-//    Takes phenotype CSV path as input if downsampling.
 process prepare_base_vds {
     tag "Prepare Base VDS"
-    label 'pyhail_env' // Apply beforeScript for Python/Hail packages
-    label 'spark_job'  // Apply resource limits (e.g., maxForks)
+    label 'pyhail_env'
+    label 'spark_job'
 
-    publishDir "${workflow.launchDir}/results/02_prepare_vds", mode:'copy', overwrite:true, pattern: '*.txt' // Publish logs or path files
+    publishDir "${params.output_dir_base}/${workflow.runName}/logs/02_prepare_vds", mode:'copy', overwrite:true, pattern: '*.{log,txt}'
 
     input:
-    path phenotype_cases_gcs_path_file from fetch_phenotype_cases.out.pheno_gcs_path_file // Path to the file containing the GCS path of phenotype cases CSV
+    path phenotype_cases_gcs_path_file // From fetch_phenotype_cases
 
     output:
-    tuple path("base_vds_path.txt"), path("wgs_ehr_ids_gcs_path.txt"), emit: base_vds_files // Files containing GCS paths
+    tuple path("base_vds_gcs_path.txt"), path("wgs_ehr_ids_gcs_path.txt"), emit: base_vds_and_ids_files
 
     script:
-    // Define expected GCS output paths for VDS and sample IDs
-    def gcs_vds_out_path = "${params.gcs_temp_dir_base}/base_cohort_wgs_ehr_unrelated.vds" // Checkpoint VDS
-    def gcs_ids_out_path = "${params.gcs_temp_dir_base}/people_with_WGS_EHR_ids.csv"      // Sample IDs used for VDS filtering
-
-    // Read the GCS path of the phenotype CSV from the input file
-    def pheno_input_gcs_path_cmd = "cat ${phenotype_cases_gcs_path_file}"
+    def gcs_vds_out_path = "${params.gcs_temp_dir_base}/base_cohort_wgs_ehr_unrelated.vds"
+    def gcs_ids_out_path = "${params.gcs_temp_dir_base}/cohort_definitions/people_with_WGS_EHR_ids_for_vds_filtering.csv" // More specific name
+    def pheno_input_gcs_path = "\$(cat ${phenotype_cases_gcs_path_file})"
 
     """
     echo "INFO: Preparing Base VDS..."
-    # Retrieve the GCS path for the phenotype CSV needed for downsampling (if enabled)
-    PHENO_INPUT_GCS_PATH=\$(${pheno_input_gcs_path_cmd})
-    echo "INFO: Using Phenotype Cases CSV from GCS path: \${PHENO_INPUT_GCS_PATH}"
+    echo "INFO: Using Phenotype Cases CSV from GCS path: ${pheno_input_gcs_path}"
 
     python3 ${projectDir}/src/prepare_base_vds.py \\
         --project_bucket                    "${System.getenv('WORKSPACE_BUCKET')}" \\
@@ -138,157 +122,145 @@ process prepare_base_vds {
         --flagged_samples_gcs_path          "${params.flagged_samples_gcs_path}" \\
         --base_cohort_vds_path_out          "${gcs_vds_out_path}" \\
         --wgs_ehr_ids_gcs_path_out          "${gcs_ids_out_path}" \\
-        --phenotype_cases_gcs_path_input    "\${PHENO_INPUT_GCS_PATH}" \\
+        --target_phenotype_name             "${params.target_phenotype_name}" \\
+        --phenotype_concept_ids             "${params.phenotype_concept_ids.join(',')}" \\
         ${params.enable_downsampling_for_vds_generation ? '--enable_downsampling_for_vds' : ''} \\
         --n_cases_downsample                ${params.n_cases_downsample} \\
         --n_controls_downsample             ${params.n_controls_downsample} \\
-        --downsampling_random_state         ${params.downsampling_random_state}
+        --downsampling_random_state         ${params.downsampling_random_state} \\
+        > prepare_base_vds.log 2>&1
 
-    # Record the GCS paths to the generated VDS and sample ID list
-    echo "INFO: Base VDS written to GCS: ${gcs_vds_out_path}"
-    echo "${gcs_vds_out_path}" > base_vds_path.txt
-    echo "INFO: WGS+EHR IDs written to GCS: ${gcs_ids_out_path}"
+    echo "${gcs_vds_out_path}" > base_vds_gcs_path.txt
     echo "${gcs_ids_out_path}" > wgs_ehr_ids_gcs_path.txt
     echo "INFO: Output GCS paths recorded."
     """
 }
 
-// 3) Process each PRS model in parallel
-//    Uses Hail/Spark, Pandas. Needs Python+Hail env and Spark resource limits.
 process process_prs_model {
     tag "Process PRS: ${model.id}"
-    label 'pyhail_env' // Apply beforeScript for Python/Hail packages
-    label 'spark_job'  // Apply resource limits (e.g., maxForks)
+    label 'pyhail_env'
+    label 'spark_job'
 
-    publishDir "${workflow.launchDir}/results/03_process_model/${model.id}", mode:'copy', overwrite:true, pattern: '*.txt'
+    publishDir "${params.output_dir_base}/${workflow.runName}/scores/${model.id}/logs_calculation", mode:'copy', overwrite:true, pattern: '*.{log,txt}'
 
     input:
-    tuple val(model), path(base_vds_path_file) // model = [id:'PGS...', url:'...'], base_vds_path_file contains GCS path to VDS
+    tuple val(model), path(base_vds_gcs_path_file) // model = [id, url, phenotype_label]
 
     output:
-    tuple val(model.id), path("final_score_gcs_path.txt"), emit: score_files // File containing GCS path to the final score CSV
+    tuple val(model), path("final_score_gcs_path.txt"), emit: model_and_score_file // Pass model info through for analysis
 
     script:
-    // Read the GCS path to the base VDS from the input file
-    def base_vds_path_cmd = "cat ${base_vds_path_file}"
-    // Define GCS output paths for this model's final scores (Hail table and CSV) within the run-specific output directory
-    def run_output_dir = "${params.output_dir_base}/${workflow.runName}"
-    def final_hail_out_path = "${run_output_dir}/scores/${model.id}/hail_table" // Final Hail Table destination
-    def final_csv_out_path  = "${run_output_dir}/scores/${model.id}/score/${model.id}_scores.csv" // Final score CSV destination
+    def base_vds_path = "\$(cat ${base_vds_gcs_path_file})"
+    def run_specific_output_dir = "${params.output_dir_base}/${workflow.runName}" // For final outputs of this run
+    def final_hail_out_path = "${run_specific_output_dir}/scores/${model.id}/hail_table/${model.id}_scores.ht"
+    def final_csv_out_path  = "${run_specific_output_dir}/scores/${model.id}/score_csv/${model.id}_scores.csv"
 
     """
     echo "INFO: Processing PRS model ${model.id}..."
-    BASE_VDS_PATH=\$(${base_vds_path_cmd})
-    echo "INFO: Using Base VDS from GCS path: \${BASE_VDS_PATH}"
+    echo "INFO: Using Base VDS from GCS path: ${base_vds_path}"
 
     python3 ${projectDir}/src/process_prs_model.py \\
         --prs_id                            "${model.id}" \\
         --prs_url                           "${model.url}" \\
-        --base_cohort_vds_path              "\${BASE_VDS_PATH}" \\
+        --base_cohort_vds_path              "${base_vds_path}" \\
         --gcs_temp_dir                      "${params.gcs_temp_dir_base}" \\
         --gcs_hail_temp_dir                 "${params.gcs_hail_temp_dir_base}" \\
         --run_timestamp                     "${workflow.runName}" \\
         --output_final_hail_table_gcs_path  "${final_hail_out_path}" \\
-        --output_final_score_csv_gcs_path   "${final_csv_out_path}"
+        --output_final_score_csv_gcs_path   "${final_csv_out_path}" \\
+        > process_prs_model_${model.id}.log 2>&1
 
-    # Record the GCS path to the final score CSV for the analysis step
-    echo "INFO: Final scores for ${model.id} saved to GCS: ${final_csv_out_path}"
     echo "${final_csv_out_path}" > final_score_gcs_path.txt
-    echo "INFO: Final score CSV GCS path recorded."
+    echo "INFO: Final score CSV GCS path for ${model.id} recorded."
     """
 }
 
-// 4) Analyze all results (run once)
-//    Uses Pandas, Scikit-learn, Matplotlib etc. Needs Python env.
-process analyze_all_results {
-    tag "Analyze Results"
-    label 'pyhail_env' // Apply beforeScript for Python packages
+process analyze_one_model_results {
+    tag "Analyze: ${model.id} for ${params.target_phenotype_name}"
+    label 'pyhail_env' // Needs pandas, sklearn, viz libs (same as Hail for simplicity now)
 
-    publishDir "${workflow.launchDir}/results/04_analysis", mode:'copy', overwrite:true, pattern: '*' // Publish summary log and plots
+    publishDir "${params.output_dir_base}/${workflow.runName}/scores/${model.id}/analysis_results", mode:'copy', overwrite:true, pattern: '*.{log,png,txt}'
 
     input:
-    path score_gcs_path_files from process_prs_model.out.score_files.map { it[1] }.collect() // Collect all "final_score_gcs_path.txt" files
-    path wgs_ehr_ids_gcs_path_file from prepare_base_vds.out.base_vds_files.map { it[1] }    // The "wgs_ehr_ids_gcs_path.txt" file
-    path phenotype_cases_gcs_path_file from fetch_phenotype_cases.out.pheno_gcs_path_file  // The "phenotype_cases_gcs_path.txt" file
+    tuple val(model), path(score_gcs_path_file), path(wgs_ehr_ids_gcs_path_file), path(phenotype_cases_gcs_path_file)
+    // model = [id, url, phenotype_label]
 
     output:
-    path "analysis_summary.log", emit: summary_log // Final summary log file
+    path "${model.id}_analysis_summary.txt", emit: summary_file // A summary output for this model
 
     script:
-    // Define the output directory on GCS where the analysis script will save plots etc.
-    def run_output_dir = "${params.output_dir_base}/${workflow.runName}"
+    def score_csv_path = "\$(cat ${score_gcs_path_file})"
+    def wgs_ehr_ids_path = "\$(cat ${wgs_ehr_ids_gcs_path_file})"
+    def pheno_cases_path = "\$(cat ${phenotype_cases_gcs_path_file})"
+    def run_specific_output_dir = "${params.output_dir_base}/${workflow.runName}" // For plots etc.
 
     """
-    echo "INFO: Starting analysis of all PRS results..."
+    echo "INFO: Analyzing results for PRS model ${model.id}..."
+    echo "INFO: Score CSV GCS path: ${score_csv_path}"
+    echo "INFO: WGS+EHR IDs GCS path: ${wgs_ehr_ids_path}"
+    echo "INFO: Phenotype Cases GCS path: ${pheno_cases_path}"
 
-    # Create a manifest file listing the GCS paths of all score CSVs
-    echo "INFO: Building score manifest file..."
-    > score_manifest.txt
-    for f in ${score_gcs_path_files.join(' ')}; do
-      if [[ -f "\$f" ]]; then
-        cat "\$f" >> score_manifest.txt
-        echo >> score_manifest.txt # Add newline separator
-      else
-         echo "WARN: Score path file not found: \$f"
-      fi
-    done
-    echo "INFO: Score manifest created:"
-    cat score_manifest.txt
-
-    # Read the GCS paths for WGS/EHR IDs and Phenotype Cases from their respective files
-    FINAL_WGS_IDS_GCS_PATH=\$(cat ${wgs_ehr_ids_gcs_path_file})
-    PHENO_CASES_GCS_PATH=\$(cat ${phenotype_cases_gcs_path_file})
-    echo "INFO: Using WGS+EHR IDs from GCS: \${FINAL_WGS_IDS_GCS_PATH}"
-    echo "INFO: Using Phenotype Cases from GCS: \${PHENO_CASES_GCS_PATH}"
-
-    # Run the analysis script which loops through the manifest
-    echo "INFO: Executing analysis script..."
     python3 ${projectDir}/src/analyze_prs_results.py \\
-        --score_manifest               score_manifest.txt \\
-        --wgs_ehr_ids_gcs_path         "\${FINAL_WGS_IDS_GCS_PATH}" \\
-        --phenotype_cases_csv_gcs_path "\${PHENO_CASES_GCS_PATH}" \\
+        --prs_id                       "${model.id}" \\
+        --prs_phenotype_label          "${model.phenotype_label}" \\
+        --score_csv_gcs_path           "${score_csv_path}" \\
+        --wgs_ehr_ids_gcs_path         "${wgs_ehr_ids_path}" \\
+        --phenotype_cases_csv_gcs_path "${pheno_cases_path}" \\
         --phenotype_name               "${params.target_phenotype_name}" \\
-        --gcs_base_output_dir_run      "${run_output_dir}" \\
+        --gcs_base_output_dir_run      "${run_specific_output_dir}" \\
         --run_timestamp                "${workflow.runName}" \\
         --project_bucket               "${System.getenv('WORKSPACE_BUCKET')}" \\
-        --output_summary_log           analysis_summary.log
+        --output_summary_file_name     "${model.id}_analysis_summary.txt" \\
+        > analyze_results_${model.id}.log 2>&1
 
-    echo "INFO: Analysis script finished. Summary log created: analysis_summary.log"
+    echo "INFO: Analysis for ${model.id} finished."
     """
 }
 
+
 // ----------------------------------------------------------------------------
-// Workflow Wiring and Execution
+// Workflow Execution
 // ----------------------------------------------------------------------------
 
 workflow {
-    // Step 1: Fetch phenotype cases definitions and get the GCS path to the CSV
-    pheno_file_ch = fetch_phenotype_cases()
+    pheno_path_ch = fetch_phenotype_cases() // Emits phenotype_cases_gcs_path.txt
 
-    // Step 2: Prepare the base VDS, filtering and optionally downsampling.
-    // Needs the phenotype CSV path for downsampling.
-    // Outputs paths to the filtered VDS and the list of included sample IDs.
-    base_ch = prepare_base_vds(pheno_file_ch)
-            // base_ch emits: tuple path("base_vds_path.txt"), path("wgs_ehr_ids_gcs_path.txt")
+    vds_and_ids_ch = prepare_base_vds(pheno_path_ch)
+        // Emits: tuple path(base_vds_gcs_path.txt), path(wgs_ehr_ids_gcs_path.txt)
 
-    // Step 3: Process each model from the model_channel in parallel.
-    // Combines each model with the path to the base VDS.
-    // Outputs the path to the final score CSV for each model.
-    prs_ch = process_prs_model(
-                model_channel.combine(base_ch.map { it[0] }) // Combine models with base_vds_path.txt
-             )
-            // prs_ch emits: tuple val(model.id), path("final_score_gcs_path.txt")
+    // Prepare inputs for process_prs_model
+    // It needs: tuple val(model_map), path(base_vds_gcs_path_file)
+    process_prs_inputs_ch = model_info_ch.combine(vds_and_ids_ch.map { it[0] })
+        // Emits: [ [id, url, phenotype_label], base_vds_gcs_path.txt ]
 
-    // Step 4: Run the final analysis step once all models are processed.
-    // Collects all score CSV paths, the sample ID list, and the phenotype case list path.
-    analyze_all_results (
-        prs_ch.map { it[1] }.collect(),  // Collect all "final_score_gcs_path.txt" files
-        base_ch.map { it[1] },          // Pass the "wgs_ehr_ids_gcs_path.txt" file path
-        pheno_file_ch                   // Pass the "phenotype_cases_gcs_path.txt" file path
-    )
+    processed_scores_ch = process_prs_model(process_prs_inputs_ch)
+        // Emits: tuple val(model_map), path(final_score_gcs_path.txt)
+
+
+    // Prepare inputs for analyze_one_model_results
+    // It needs: tuple val(model_map), path(score_gcs_path_file), path(wgs_ehr_ids_gcs_path_file), path(phenotype_cases_gcs_path_file)
+    // We have:
+    //   1. processed_scores_ch: [ [id, url, phenotype_label], final_score_gcs_path.txt ]
+    //   2. vds_and_ids_ch.map { it[1] }: wgs_ehr_ids_gcs_path.txt (value channel)
+    //   3. pheno_path_ch: phenotype_cases_gcs_path.txt (value channel)
+
+    // Combine processed_scores_ch with the wgs_ehr_ids_gcs_path.txt.
+    // Since vds_and_ids_ch is a single emission, its map {it[1]} will also be.
+    // We want to pair each model's score with this single WGS ID path.
+    analysis_inputs_intermediate_ch = processed_scores_ch.combine(vds_and_ids_ch.map { it[1] })
+        // Emits: [ [id, url, phenotype_label], final_score_gcs_path.txt, wgs_ehr_ids_gcs_path.txt ]
+
+    // Now combine with the single phenotype_cases_gcs_path.txt
+    final_analysis_inputs_ch = analysis_inputs_intermediate_ch.combine(pheno_path_ch)
+        // Emits: [ [id, url, phenotype_label], final_score_gcs_path.txt, wgs_ehr_ids_gcs_path.txt, phenotype_cases_gcs_path.txt ]
+
+    analysis_summary_files_ch = analyze_one_model_results(final_analysis_inputs_ch)
+
+    analysis_summary_files_ch.collectFile(name:'all_analysis_summaries.txt', storeDir:"${params.output_dir_base}/${workflow.runName}/analysis_summary_collection")
 }
 
 workflow.onComplete {
+    def summary_file = "${params.output_dir_base}/${workflow.runName}/analysis_summary_collection/all_analysis_summaries.txt"
     log.info """
     ============================================
       PGS Analysis Workflow Completed
@@ -299,7 +271,9 @@ workflow.onComplete {
       Duration    : ${workflow.duration}
       Work Dir    : ${workflow.workDir}
       Launch Dir  : ${workflow.launchDir}
-      Output Dir  : ${params.output_dir_base}/${workflow.runName}
+      Run Output  : ${params.output_dir_base}/${workflow.runName}
+      Temp Files  : ${params.gcs_temp_dir_base}
+      Collected analysis summaries (if successful): ${summary_file} (local path may vary if not using local executor for final collection)
     ============================================
     """.stripIndent()
 }
@@ -313,8 +287,9 @@ workflow.onError {
       Status      : Failed
       Exit Status : ${workflow.exitStatus}
       Error report: ${workflow.errorReport}
-      Trace file  : ${workflow.launchDir}/results/reports/trace.txt
+      Trace file  : ${params.output_dir_base}/${workflow.runName}/reports/trace.txt (if generated)
       Check work directory for task logs: ${workflow.workDir}
+      Check Nextflow log for more details.
     ============================================
     """.stripIndent()
 }
