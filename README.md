@@ -1,6 +1,9 @@
-The following env vars are available:
-Here's a bulleted list of all the environment variables without their values:
+Overwrite existing and run:
+```
+rm -rf pgsline && git clone https://github.com/SauersML/pgsline.git && (cd pgsline && nextflow run main.nf)
+```
 
+The following env vars are available:
 * SHELL
 * NV_LIBCUBLAS_VERSION
 * NVIDIA_VISIBLE_DEVICES
