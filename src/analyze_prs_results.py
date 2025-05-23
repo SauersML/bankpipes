@@ -23,7 +23,7 @@ def main():
     parser.add_argument("--phenotype_name", required=True, help="Name of the target phenotype condition being analyzed against (e.g., 'Ischemic Stroke').")
     parser.add_argument("--gcs_base_output_dir_run", required=True, help="GCS base output directory for this specific pipeline run (used for saving plots, standardized scores, etc.).")
     parser.add_argument("--run_timestamp", required=True, help="Pipeline run timestamp (YYYYMMDD_HHMMSS), used for unique local directories if needed.")
-    parser.add_argument("--project_bucket", required=True, help="GCS project bucket (gs://your-bucket), used for context if needed.")
+    parser.add_argument("--google_billing_project", required=True, help="Google Cloud Project ID for billing and GCS access.")
     parser.add_argument("--output_summary_file_name", required=True, help="Local file name to write the analysis summary statistics.")
 
     args = parser.parse_args()
@@ -34,7 +34,8 @@ def main():
     target_phenotype_name = args.phenotype_name # The condition being predicted
     phenotype_col_name = f"{target_phenotype_name.replace(' ', '_')}_status" # Standardized column name for phenotype status
 
-    fs = get_gcs_fs() # Initialize GCS filesystem from utils
+    # Initialize GCS filesystem, explicitly providing the billing project
+    fs = get_gcs_fs(project_id_for_billing=args.google_billing_project) # Initialize GCS filesystem from utils
 
     print(f"\n------- Analyzing Results for PRS Model: {prs_id} ({target_phenotype_name}) -------")
     analysis_start_time = datetime.datetime.now()
