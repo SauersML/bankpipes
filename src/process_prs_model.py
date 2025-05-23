@@ -534,7 +534,8 @@ def main():
         cluster_mode=args.hail_cluster_mode # Pass the cluster mode to Hail initialization
     )
     # Set a default number of partitions for Hail operations.
-    hl.utils.default_n_partitions(2000)
+    dynamic_partitions = max(200, hl.spark_context().defaultParallelism * 4)
+    hl.utils.default_n_partitions(dynamic_partitions)
 
     # --- Define Intermediate Paths ---
     # These paths point to potentially reusable files across runs in the stable GCS_TEMP_DIR
