@@ -463,22 +463,26 @@ def run_pipeline(config: PipelineConfig):
 
 
 if __name__ == "__main__":
-    # Setup command-line argument parsing for main.py itself
-    cli_parser = argparse.ArgumentParser(description="Python-based Polygenic Score (PGS) Pipeline Orchestrator.")
+    # Setup command line argument parsing for main.py itself
+    cli_parser = argparse.ArgumentParser(description="PGS Pipeline Orchestrator.")
     cli_parser.add_argument(
         "--config",
         type=str,
-        required=True,
-        help="Path to the pipeline configuration YAML file (e.g., config.yaml)."
+        default="config.yaml",  # Default filename
+        help="Path to the pipeline configuration YAML file. Defaults to 'config.yaml' in the same directory as main.py."
     )
     pipeline_args = cli_parser.parse_args()
 
+    if not os.path.isabs(pipeline_args.config):
+        config_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), pipeline_args.config)
+    else:
+        config_file_path = pipeline_args.config
+    
     try:
         logger.info("Initializing pipeline configuration...")
         # Instantiate the configuration object, which loads YAML and environment variables
-        config_manager = PipelineConfig(pipeline_args.config)
-        # Start the main pipeline execution logic
-        run_pipeline(config_manager)
+        pipeline_config = PipelineConfig(config_file_path) # Use the resolved path
+        run_pipeline(pipeline_config)
     except SystemExit:
         # This handles sys.exit() calls from within the pipeline, often due to logged FATAL errors.
         logger.info("Pipeline exited due to a previously logged fatal error.")
