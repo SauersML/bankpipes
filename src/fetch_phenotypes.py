@@ -5,9 +5,9 @@ import pandas as pd
 from utils import cache_result, make_cache_dir, gcs_path_exists, get_gcs_fs
 
 @cache_result("phenotype_data_main") # Cache name prefix
-def get_phenotype_data(phenotype_name, concept_ids_str, cdr_env_var_value, prs_id=None): # prs_id not used, for cache_result consistency
+def get_phenotype_data(phenotype_name, concept_ids_str, cdr_env_var_value, prs_id=None): # prs_id not used here, for cache_result consistency
     """Fetches case status based on OMOP concept IDs."""
-    make_cache_dir() # make local cache directory exists
+    get_cache_dir() # Changed from make_cache_dir
     print(f"Retrieving {phenotype_name} phenotype (Cases) from BigQuery...")
 
     if not cdr_env_var_value:
