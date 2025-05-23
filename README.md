@@ -1,6 +1,6 @@
 Overwrite existing and run:
 ```
-rm -rf pgsline && git clone https://github.com/SauersML/pgsline.git && (cd pgsline && nextflow run main.nf)
+rm -rf pgsline && git clone https://github.com/SauersML/pgsline.git && (cd pgsline && python3 main.py)
 ```
 
 The following env vars are available:
