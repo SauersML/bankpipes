@@ -1,6 +1,6 @@
 Overwrite existing and run:
 ```
-rm -rf bankpipes && git clone https://github.com/SauersML/bankpipes.git && (cd bankpipes && python3 main.py)
+nohup bash -c '([ -d bankpipes ] || git clone --depth 1 https://github.com/SauersML/bankpipes.git) && cd bankpipes && python3 main.py' 2>&1 | tee bankpipes_run.log &
 ```
 
 The following env vars are available:
