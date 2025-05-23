@@ -282,8 +282,15 @@ def main():
     get_cache_dir() 
 
     # Initialize GCS FileSystem and Hail
-    fs = get_gcs_fs() 
-    init_hail(args.gcs_hail_temp_dir, args.run_timestamp)
+    # Explicitly pass billing project to GCSFileSystem initialization
+    fs = get_gcs_fs(project_id_for_billing=args.google_billing_project)
+    init_hail(
+        gcs_hail_temp_dir=args.gcs_hail_temp_dir,
+        log_suffix=args.run_timestamp, # Using run_timestamp as the log suffix for this script
+        spark_configurations_json_str=args.spark_configurations_json
+    )
+
+    base_cohort_vds = None # Initialize VDS variable
 
     base_cohort_vds = None # Initialize VDS variable
 
