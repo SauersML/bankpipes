@@ -53,12 +53,13 @@ def main():
     parser.add_argument("--phenotype_concept_ids", required=True, help="Comma-separated OMOP concept IDs.")
     parser.add_argument("--workspace_cdr", required=True, help="Workspace CDR string.")
     parser.add_argument("--output_phenotype_csv_gcs_path", required=True, help="GCS path to save the phenotype CSV.")
-    parser.add_argument("--project_bucket", required=True, help="GCS project bucket for writing output.")
+    parser.add_argument("--google_billing_project", required=True, help="Google Cloud Project ID for billing and GCS access.")
 
     args = parser.parse_args()
-    make_cache_dir() # Make sure local cache dir is available for the @cache_result decorator
+    get_cache_dir() # Ensure local cache directory is available for the @cache_result decorator; changed from make_cache_dir
 
-    fs = get_gcs_fs() # Initialize GCS filesystem
+    # Initialize GCS filesystem, explicitly providing the billing project
+    fs = get_gcs_fs(project_id_for_billing=args.google_billing_project)
 
     phenotype_cases_df = get_phenotype_data(
         phenotype_name=args.phenotype_name,
