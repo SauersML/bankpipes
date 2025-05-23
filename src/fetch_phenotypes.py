@@ -56,7 +56,7 @@ def main():
     parser.add_argument("--google_billing_project", required=True, help="Google Cloud Project ID for billing and GCS access.")
 
     args = parser.parse_args()
-    get_cache_dir() # Ensure local cache directory is available for the @cache_result decorator; changed from make_cache_dir
+    get_cache_dir()
 
     # Initialize GCS filesystem, explicitly providing the billing project
     fs = get_gcs_fs(project_id_for_billing=args.google_billing_project)
