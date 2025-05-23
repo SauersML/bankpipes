@@ -13,11 +13,12 @@ from utils import (
 def parse_args():
     """Parses command-line arguments for the VDS preparation script."""
     parser = argparse.ArgumentParser(description="Prepare Base Cohort VDS for PRS Analysis.")
-    parser.add_argument("--project_bucket", required=True, help="GCS project bucket (gs://your-bucket).")
+    parser.add_argument("--google_billing_project", required=True, help="Google Cloud Project ID for billing and GCS access.")
     parser.add_argument("--workspace_cdr", required=True, help="Workspace CDR (e.g., fc-aou-cdr-prod-ct.CYYYYQQRR), used for querying WGS+EHR samples.")
     parser.add_argument("--run_timestamp", required=True, help="Run timestamp (YYYYMMDD_HHMMSS) for Hail logging.")
     parser.add_argument("--gcs_temp_dir", required=True, help="GCS base directory for stable intermediate checkpoints (VDS, ID lists).")
     parser.add_argument("--gcs_hail_temp_dir", required=True, help="GCS temporary directory specifically for Hail shuffle/intermediate operations.")
+    parser.add_argument("--spark_configurations_json", required=True, help="JSON string of Spark configurations for Hail initialization.")
     parser.add_argument("--wgs_vds_path", required=True, help="GCS path to the full input WGS VDS.")
     parser.add_argument("--flagged_samples_gcs_path", required=True, help="GCS path to the TSV file containing flagged sample IDs.")
     parser.add_argument("--base_cohort_vds_path_out", required=True, help="GCS output path for the prepared base cohort VDS checkpoint.")
