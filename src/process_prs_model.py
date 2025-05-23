@@ -506,18 +506,24 @@ def main():
     parser.add_argument('--prs_url',                     required=True, help="URL to the harmonized scoring file (txt.gz).")
     parser.add_argument('--base_cohort_vds_path',        required=True, help="GCS path to the prepared base cohort VDS.")
     parser.add_argument('--gcs_temp_dir',                required=True, help="GCS base directory for intermediate checkpoints (weights, intervals).")
-    parser.add_argument('--gcs_hail_temp_dir',           required=True, help="GCS temporary directory for Hail operations.")
-    parser.add_argument('--run_timestamp',               required=True, help="Pipeline run timestamp for logging.")
+    parser.add_argument('--gcs_hail_temp_dir',          required=True, help="GCS temporary directory for Hail operations.")
+    parser.add_argument('--spark_configurations_json',  required=True, help="JSON string of Spark configurations for Hail initialization.")
+    parser.add_argument('--run_timestamp',                required=True, help="Pipeline run timestamp for logging.")
     parser.add_argument('--output_final_hail_table_gcs_path', required=True, help="GCS output path for the final scores Hail Table.")
-    parser.add_argument('--output_final_score_csv_gcs_path',   required=True, help="GCS output path for the final scores CSV.")
+    parser.add_argument('--output_final_score_csv_gcs_path',    required=True, help="GCS output path for the final scores CSV.")
     args = parser.parse_args()
 
     prs_id = args.prs_id
     print(f"--- Starting processing for PRS Model: {prs_id} ---")
 
     # Initialize Hail and GCS
-    fs = get_gcs_fs() # From utils
-    init_hail(args.gcs_hail_temp_dir, f"{args.run_timestamp}_{prs_id}") # From utils, add prs_id to log name
+    # Explicitly pass billing project to GCSFileSystem initialization
+    fs = get_gcs_fs(project_id_for_billing=args.google_billing_project) # Ensure args.google_billing_project is defined above
+    init_hail(
+        gcs_hail_temp_dir=args.gcs_hail_temp_dir,
+        log_suffix=f"{args.run_timestamp}_{prs_id}", # Using run_timestamp and prs_id for specific log name
+        spark_configurations_json_str=args.spark_configurations_json
+    )
 
     # --- Define Intermediate Paths ---
     # These paths point to potentially reusable files across runs in the stable GCS_TEMP_DIR
