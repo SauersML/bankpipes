@@ -162,7 +162,8 @@ def init_hail(gcs_hail_temp_dir, log_suffix="task", spark_configurations_json_st
             print(f"Hail initialization failed (Attempt {attempt + 1}/{_HAIL_INIT_ATTEMPTS}): {e}")
             if attempt < _HAIL_INIT_ATTEMPTS - 1:
                 print("Retrying Hail initialization...")
-                if hl.utils.java.Env.spark_context():
+                sc = hl.spark_context()
+                if sc is not None: # Check if the SparkContext object exists
                     hl.stop()
                 time.sleep(10 * (attempt + 1))
             else:
