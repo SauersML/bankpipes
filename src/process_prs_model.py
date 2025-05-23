@@ -481,13 +481,18 @@ def save_ht_and_csv(ht_scores: hl.Table | None, hail_table_gcs_path: str, score_
         print(f"[{prs_id}] Exporting PRS scores to CSV: {score_csv_gcs_path}")
         # Select and rename columns for a clean CSV output
         ht_export = ht_scores.select(
-            person_id=ht_scores.s, # Assuming the sample key is 's'
+            person_id=ht_scores.s,  # Sample identifier
             prs_total_score=ht_scores.total_score,
             prs_variant_count=ht_scores.variant_count,
             prs_normalized_score=ht_scores.normalized_score
         )
-        ht_export.export(score_csv_gcs_path, header=True, delimiter=',', missing='NA')
+        export_tmp_dir = score_csv_gcs_path + "_tmpdir"
+        ht_export.repartition(1).export(export_tmp_dir, header=True, delimiter=',', missing='NA')
+        shard_path = export_tmp_dir + "/part-00000"
+        hl.hadoop_copy(shard_path, score_csv_gcs_path)
+        hl.hadoop_delete(export_tmp_dir, recursive=True)
         print(f"[{prs_id}] PRS scores exported successfully to {score_csv_gcs_path}.\n")
+
         return True # Indicate success
 
     except Exception as e:
