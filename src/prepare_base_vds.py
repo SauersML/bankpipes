@@ -31,10 +31,12 @@ def parse_args():
     parser.add_argument("--n_cases_downsample", type=int, default=500, help="Target number of cases for downsampling (if enabled).")
     parser.add_argument("--n_controls_downsample", type=int, default=500, help="Target number of controls for downsampling (if enabled).")
     parser.add_argument("--downsampling_random_state", type=int, default=2025, help="Random state seed for reproducible downsampling (if enabled).")
-    
-    # Deprecated/Unused arguments (kept for compatibility check, but logic removed/changed)
-    # parser.add_argument("--phenotype_concept_ids", required=False, help="DEPRECATED: Concept IDs are handled in fetch_phenotypes step.")
-
+    parser.add_argument(
+        "--hail_cluster_mode", 
+        choices=["local", "dataproc_yarn"], 
+        default="local", 
+        help="Hail execution mode: 'local' for local Spark, 'dataproc_yarn' for running on a Dataproc YARN cluster."
+    )
     return parser.parse_args()
 
 # --- VDS Preparation Functions ---
@@ -45,13 +47,18 @@ def load_full_vds(path: str, fs_gcs) -> hl.vds.VariantDataset:
     try:
         # Hail's read_vds uses its own GCS connector configuration.
         vds = hl.vds.read_vds(path)
-        # Initial sanity check on sample count
-        n_samples = vds.variant_data.count_cols()
-        if n_samples == 0:
-            print(f"FATAL ERROR: Loaded VDS from {path} contains 0 samples.")
+        
+        # Perform a lightweight check to ensure the VDS is readable and has columns.
+        # .cols().take(1) is much cheaper than .count_cols() on a large VDS.
+        # It returns a list; an empty list means no columns (samples).
+        if not vds.variant_data.cols().take(1):
+            print(f"FATAL ERROR: Loaded VDS from {path} appears to have 0 samples (based on initial .cols().take(1) check).")
             sys.exit(1)
-        print("VDS successfully loaded.")
-        print(f"Initial VDS sample count: {n_samples}\n")
+
+        print("VDS successfully loaded (initial column presence check passed).")
+        # The full n_samples count will be expensive on the raw VDS. 
+        print(f"Initial VDS variant_data n_partitions: {vds.variant_data.n_partitions()}")
+        print(f"Initial VDS reference_data n_partitions: {vds.reference_data.n_partitions()}\n")
         return vds
     except Exception as e:
         if "requester_pays" in str(e).lower():
@@ -287,8 +294,13 @@ def main():
     init_hail(
         gcs_hail_temp_dir=args.gcs_hail_temp_dir,
         log_suffix=args.run_timestamp, # Using run_timestamp as the log suffix for this script
-        spark_configurations_json_str=args.spark_configurations_json
+        spark_configurations_json_str=args.spark_configurations_json,
+        cluster_mode=args.hail_cluster_mode # Pass the cluster mode to Hail initialization
     )
+    # Set a default number of partitions for Hail operations to improve GCS I/O and prevent too many small files.
+    # This value will be used by operations like .repartition() if no explicit num_partitions is given,
+    # and can influence other Hail shuffles.
+    hl.utils.default_n_partitions(2000) # Default shuffle/output partitions for many Hail operations.
 
     base_cohort_vds = None # Initialize VDS variable
 
@@ -419,6 +431,35 @@ def main():
         # 7. Write the Filtered VDS as a Checkpoint
         print(f"Writing filtered Base Cohort VDS checkpoint to: {args.base_cohort_vds_path_out}")
         try:
+            # Repartition the VDS to a more manageable number of partitions before writing.
+            # This improves GCS I/O performance for the checkpoint and subsequent reads.
+            target_vds_partitions = hl.utils.default_n_partitions() # Use the globally set default
+            
+            current_variant_partitions = base_cohort_vds.variant_data.n_partitions()
+            current_reference_partitions = base_cohort_vds.reference_data.n_partitions()
+
+            print(f"Current VDS partitions before checkpoint write: variant_data={current_variant_partitions}, reference_data={current_reference_partitions}")
+            
+            # Only repartition if significantly different, to avoid unnecessary shuffles
+            # Heuristic
+            if current_variant_partitions > target_vds_partitions:
+                print(f"Repartitioning VDS to ~{target_vds_partitions} variant_data partitions before writing checkpoint...")
+                # For reference_data, fewer partitions are often sufficient as it's usually smaller or accessed differently.
+                # A fraction of target_vds_partitions, though at least 1.
+                target_ref_partitions = max(1, target_vds_partitions // 10) 
+                
+                # Check if reference data actually needs repartitioning
+                ref_data_repartitioned = base_cohort_vds.reference_data
+                if current_reference_partitions > target_ref_partitions:
+                     print(f"Repartitioning reference_data to {target_ref_partitions} partitions.")
+                     ref_data_repartitioned = base_cohort_vds.reference_data.repartition(target_ref_partitions, shuffle=True)
+
+                print(f"Repartitioning variant_data to {target_vds_partitions} partitions.")
+                variant_data_repartitioned = base_cohort_vds.variant_data.repartition(target_vds_partitions, shuffle=True)
+                
+                base_cohort_vds = hl.vds.VariantDataset(ref_data_repartitioned, variant_data_repartitioned)
+                print(f"VDS repartitioned. New partitions: variant_data={base_cohort_vds.variant_data.n_partitions()}, reference_data={base_cohort_vds.reference_data.n_partitions()}")
+
             # Overwrite if attempting regeneration due to previous failure
             base_cohort_vds.write(args.base_cohort_vds_path_out, overwrite=True) 
             print("Base Cohort VDS checkpoint successfully written.")
