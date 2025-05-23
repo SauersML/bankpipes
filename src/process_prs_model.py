@@ -507,10 +507,11 @@ def main():
     parser.add_argument('--base_cohort_vds_path',        required=True, help="GCS path to the prepared base cohort VDS.")
     parser.add_argument('--gcs_temp_dir',                required=True, help="GCS base directory for intermediate checkpoints (weights, intervals).")
     parser.add_argument('--gcs_hail_temp_dir',          required=True, help="GCS temporary directory for Hail operations.")
-    parser.add_argument('--spark_configurations_json',  required=True, help="JSON string of Spark configurations for Hail initialization.")
     parser.add_argument('--run_timestamp',                required=True, help="Pipeline run timestamp for logging.")
     parser.add_argument('--output_final_hail_table_gcs_path', required=True, help="GCS output path for the final scores Hail Table.")
     parser.add_argument('--output_final_score_csv_gcs_path',    required=True, help="GCS output path for the final scores CSV.")
+    parser.add_argument('--google_billing_project',       required=True, help="Google Cloud Project ID for billing and GCS access.")
+    parser.add_argument('--spark_configurations_json',  required=True, help="JSON string of Spark configurations for Hail initialization.")
     args = parser.parse_args()
 
     prs_id = args.prs_id
