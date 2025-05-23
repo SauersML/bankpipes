@@ -2,7 +2,7 @@ import argparse
 import os
 import sys
 import pandas as pd
-from utils import cache_result, make_cache_dir, gcs_path_exists, get_gcs_fs
+from utils import cache_result, get_cache_dir, gcs_path_exists, get_gcs_fs
 
 @cache_result("phenotype_data_main") # Cache name prefix
 def get_phenotype_data(phenotype_name, concept_ids_str, cdr_env_var_value, prs_id=None): # prs_id not used here, for cache_result consistency
