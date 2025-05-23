@@ -298,9 +298,9 @@ def main():
         cluster_mode=args.hail_cluster_mode # Pass the cluster mode to Hail initialization
     )
     # Set a default number of partitions for Hail operations to improve GCS I/O and prevent too many small files.
-    # This value will be used by operations like .repartition() if no explicit num_partitions is given,
-    # and can influence other Hail shuffles.
-    hl.utils.default_n_partitions(2000) # Default shuffle/output partitions for many Hail operations.
+    # This value scales with the available Spark cores to remain efficient on both small and large clusters.
+    dynamic_partitions = max(200, hl.spark_context().defaultParallelism * 4)
+    hl.utils.default_n_partitions(dynamic_partitions)  # Dynamically determined shuffle/output partitions.
 
     base_cohort_vds = None # Initialize VDS variable
 
