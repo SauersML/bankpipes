@@ -132,6 +132,10 @@ class PipelineConfig:
         self.vds_prep_n_controls = VDS_PREP_N_CONTROLS_DOWNSAMPLE
         self.vds_prep_random_state = VDS_PREP_DOWNSAMPLING_RANDOM_STATE
 
+        # Dataproc specific configurations
+        self.dataproc_region = os.getenv("DATAPROC_REGION", "us-central1") # Default Dataproc region
+        self.dataproc_cluster_name = f"prs-pipeline-{self.run_timestamp}" # Unique cluster name for this run
+
         # Prepare Spark configurations JSON string, replacing internal template marker
         spark_conf_list_template = [
             "spark.hadoop.fs.gs.requester.pays.mode=AUTO",
