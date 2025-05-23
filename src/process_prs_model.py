@@ -216,23 +216,16 @@ def extract_intervals(df: pd.DataFrame, prs_id: str, gcs_path: str, fs) -> bool:
         return False
 
 
-def import_weights_as_ht(gcs_csv_path: str, prs_id: str) -> hl.Table | None:
+def import_weights_as_ht(gcs_ht_path: str, prs_id: str) -> hl.Table | None:
     """Import the prepared weight CSV from GCS into a Hail Table keyed by locus."""
-    if not gcs_path_exists(gcs_csv_path): # Use helper from utils
-        print(f"[{prs_id}] ERROR: Weight CSV file not found on GCS at {gcs_csv_path}")
+    if not gcs_path_exists(gcs_ht_path):  # Use helper from utils
+        print(f"[{prs_id}] ERROR: Weight Hail Table not found on GCS at {gcs_ht_path}")
         return None
 
-    print(f"[{prs_id}] Importing PRS weights from GCS for Hail annotation: {gcs_csv_path}")
+    print(f"[{prs_id}] Importing PRS weights from GCS for Hail annotation: {gcs_ht_path}")
     try:
         # Import, specifying types crucial for locus creation and calculation
-        prs_ht = hl.import_table(
-            gcs_csv_path,
-            delimiter=',',
-            types={'contig': hl.tstr, 'position': hl.tint32, 'weight': hl.tfloat64, 'bp': hl.tint32},
-            missing='NA',
-            comment='#', # Should not be needed if prepared correctly, but safe.
-            impute=True # Impute other columns like effect_allele
-        )
+        prs_ht = hl.read_table(gcs_ht_path)
 
         # --- Verification after import ---
         if prs_ht.count() == 0:
@@ -409,7 +402,11 @@ def annotate_and_score(vds_filtered: hl.vds.VariantDataset, prs_ht: hl.Table, pr
         # Treat missing contribution as zero for the sum aggregation.
         print(f"[{prs_id}] Calculating variant contributions...")
         mt = mt.annotate_entries(
-            variant_contribution = hl.coalesce(mt.effect_allele_count * mt.prs.weight, 0.0)
+            variant_contribution = hl.if_else(
+                hl.is_defined(mt.effect_allele_count) & hl.is_defined(mt.prs.weight),
+                mt.effect_allele_count * mt.prs.weight,
+                hl.missing(hl.tfloat64)
+            )
         )
 
         # Aggregate scores per sample
@@ -418,7 +415,7 @@ def annotate_and_score(vds_filtered: hl.vds.VariantDataset, prs_ht: hl.Table, pr
         prs_scores_ht = mt.select_cols(
             total_score=hl.agg.sum(mt.variant_contribution),
             # Count variants where calculation was possible (dosage defined)
-            variant_count=hl.agg.count_where(hl.is_defined(mt.effect_allele_count))
+            variant_count=hl.agg.count_where(hl.is_defined(mt.variant_contribution))
         )
 
         # Normalize score (optional but good practice)
@@ -544,7 +541,7 @@ def main():
 
     # --- Define Intermediate Paths ---
     # These paths point to potentially reusable files across runs in the stable GCS_TEMP_DIR
-    intermediate_weights_gcs_path = f"{args.gcs_temp_dir}/prs_weights/{prs_id}_prepared_weight_table.csv"
+    intermediate_weights_gcs_path = f"{args.gcs_temp_dir}/prs_weights/{prs_id}_prepared_weight_table.ht"
     intermediate_intervals_gcs_path = f"{args.gcs_temp_dir}/prs_intervals/{prs_id}_interval.tsv"
 
     # --- Step 1: Download and Prepare Weights/Intervals (with Checkpointing) ---
@@ -586,11 +583,17 @@ def main():
                     print(f"[{prs_id}] WARNING: Could not remove local file {local_downloaded_path}: {e}")
 
         # Save/Upload Weights (if missing)
-        if not weight_table_exists:
-            print(f"[{prs_id}] Uploading prepared weights to checkpoint: {intermediate_weights_gcs_path}")
-            if not save_to_gcs(score_df_prepared, prs_id, "weights", intermediate_weights_gcs_path, fs):
-                print(f"[{prs_id}] FATAL: Failed to save/upload weights checkpoint.")
-                sys.exit(1)
+            if not weight_table_exists:
+                print(f"[{prs_id}] Converting prepared weights to Hail Table and uploading to checkpoint: {intermediate_weights_gcs_path}")
+                try:
+                    ht_weights = hl.Table.from_pandas(score_df_prepared, key=['contig', 'position'])
+                    ht_weights = ht_weights.annotate(locus=hl.locus(ht_weights.contig, ht_weights.position, reference_genome='GRCh38'))
+                    ht_weights = ht_weights.key_by('locus')
+                    ht_weights.write(intermediate_weights_gcs_path, overwrite=True)
+                    print(f"[{prs_id}] Hail Table uploaded successfully to {intermediate_weights_gcs_path}")
+                except Exception as e:
+                    print(f"[{prs_id}] FATAL: Failed to write Hail Table: {e}")
+                    sys.exit(1)
         else:
              print(f"[{prs_id}] Weight table already exists, skipping upload.")
 
