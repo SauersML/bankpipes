@@ -138,9 +138,34 @@ class PipelineConfig:
 
         # Prepare Spark configurations JSON string, replacing internal template marker
         spark_conf_list_template = [
+            # --- GCS Requester Pays and Project ID  ---
             "spark.hadoop.fs.gs.requester.pays.mode=AUTO",
             "spark.hadoop.fs.gs.requester.pays.project.id={{GOOGLE_BILLING_PROJECT}}",
-            "spark.hadoop.fs.gs.project.id={{GOOGLE_BILLING_PROJECT}}"
+            "spark.hadoop.fs.gs.project.id={{GOOGLE_BILLING_PROJECT}}", # General GCS project ID
+
+            # --- GCS Connector Performance ---
+            # Larger block size for GCS operations, perhaps improves read/write performance for large files.
+            "spark.hadoop.fs.gs.block.size=134217728", # 128MB
+
+            # --- Spark Dynamic Allocation ---
+            # They will be active when jobs are submitted to Dataproc.
+            "spark.dynamicAllocation.enabled=true",
+
+            # --- Shuffle Behavior ---
+            # Default number of partitions for Spark SQL shuffles.
+            # This can also be set/overridden by hl.utils.default_n_partitions for Hail-specific shuffles.
+            "spark.sql.shuffle.partitions=2001",
+
+            # --- Memory Management and Serialization ---
+            # Kryo is generally faster than Java serialization for Spark.
+            "spark.serializer=org.apache.spark.serializer.KryoSerializer",
+
+            # --- Garbage Collection (More relevant for executors on a cluster) ---
+            # Using G1GC is common for Spark workloads. InitiatingHeapOccupancyPercent can tune when G1GC kicks in.
+            # These apply to the JVMs of the executors.
+            "spark.executor.defaultJavaOptions=-XX:+UseG1GC -XX:InitiatingHeapOccupancyPercent=35 -XX:+PrintGCDetails -XX:+PrintGCTimeStamps"
+            # Adding GC logging to executor opts can be helpful for debugging performance on cluster.
+            # For the driver, similar options can be set if needed, often via PYSPARK_SUBMIT_ARGS or cluster submission parameters.
         ]
         processed_spark_list = [
             s.replace("{{GOOGLE_BILLING_PROJECT}}", self.google_billing_project) for s in spark_conf_list_template
