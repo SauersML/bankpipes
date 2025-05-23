@@ -15,49 +15,60 @@ import sys
 import gzip
 import shutil
 import time
+import json
 import pandas as pd
-# import numpy as np
 import requests
 import gcsfs
 import hail as hl
 
 # --- Globals ---
-_FS = None # Global GCSFileSystem object, prefixed to avoid accidental direct use
-_GCS_INIT_ATTEMPTS = 3 # Retries for initializing GCS connection
-_HAIL_INIT_ATTEMPTS = 3 # Retries for initializing Hail
-_LOCAL_CACHE_DIR_NAME = "local_script_cache" # Name of the local cache directory
+_FS = None 
+_FS_PROJECT_ID = None # Project ID used to initialize _FS
+_GCS_INIT_ATTEMPTS = 3
+_HAIL_INIT_ATTEMPTS = 3
+_LOCAL_CACHE_DIR_NAME = "local_script_cache"
 
 # --- GCS Interaction ---
 
-def get_gcs_fs():
-    """
-    Initializes and returns a GCSFileSystem object with requester_pays enabled.
-    Uses a global variable _FS to avoid re-initialization. Includes retry logic.
-    Exits fatally if initialization fails.
-    """
-    global _FS
-    if _FS is None:
-        print("Initializing GCSFileSystem (requester_pays=True)...")
-        for attempt in range(_GCS_INIT_ATTEMPTS):
+def get_gcs_fs(project_id_for_billing=None):
+    global _FS, _FS_PROJECT_ID
+
+    # Re-initialize if FS is not set, or if a project ID is provided and it's different from the cached one
+    if _FS is None or (project_id_for_billing is not None and _FS_PROJECT_ID != project_id_for_billing):
+        if project_id_for_billing:
+            print(f"Initializing GCSFileSystem (requester_pays=True, project={project_id_for_billing})...")
+        else:
+            print("Initializing GCSFileSystem (requester_pays=True, project not specified, relying on ADC default for billing)...")
+        
+        current_attempt = 0
+        while current_attempt < _GCS_INIT_ATTEMPTS:
+            current_attempt += 1
             try:
-                fs_instance = gcsfs.GCSFileSystem(requester_pays=True)
+                fs_instance = gcsfs.GCSFileSystem(project=project_id_for_billing, requester_pays=True)
+                # This helps catch auth/permission issues early.
+                if project_id_for_billing:
+                    pass
                 print("GCSFileSystem initialized successfully.")
                 _FS = fs_instance
-                break # Success
+                _FS_PROJECT_ID = project_id_for_billing # Cache the project ID used
+                break 
             except Exception as e:
-                print(f"Error initializing GCSFileSystem (Attempt {attempt + 1}/{_GCS_INIT_ATTEMPTS}): {e}")
-                if attempt < _GCS_INIT_ATTEMPTS - 1:
+                print(f"Error initializing GCSFileSystem (Attempt {current_attempt}/{_GCS_INIT_ATTEMPTS}, project: {project_id_for_billing}): {e}")
+                if current_attempt < _GCS_INIT_ATTEMPTS:
                     print("Retrying GCS initialization...")
-                    time.sleep(5 * (attempt + 1))
+                    time.sleep(5 * current_attempt)
                 else:
                     print("FATAL: Could not initialize GCSFileSystem after multiple attempts.")
-                    print("Check GCS credentials, permissions, and network connectivity.")
                     sys.exit(1)
+    elif _FS is not None and project_id_for_billing is None and _FS_PROJECT_ID is not None:
+        print(f"Returning GCSFileSystem previously initialized with project: {_FS_PROJECT_ID}")
+        pass
+
+
     return _FS
 
-def gcs_path_exists(gcs_path):
-    """Checks if a path (file or directory) exists on GCS using gcsfs."""
-    fs = get_gcs_fs()
+def gcs_path_exists(gcs_path, project_id_for_billing=None):
+    fs = get_gcs_fs(project_id_for_billing=project_id_for_billing)
     if not gcs_path:
         return False
     try:
@@ -66,13 +77,9 @@ def gcs_path_exists(gcs_path):
         print(f"[GCS CHECK WARNING] Failed to check existence of {gcs_path}: {e}")
         return False
 
-def delete_gcs_path(gcs_path, recursive=True):
-    """
-    Deletes a GCS path using gcsfs with retries.
-    Returns True if deletion is successful or path doesn't exist, False otherwise.
-    """
-    fs = get_gcs_fs()
-    if not gcs_path_exists(gcs_path): # Use our own checker first
+def delete_gcs_path(gcs_path, project_id_for_billing=None, recursive=True):
+    fs = get_gcs_fs(project_id_for_billing=project_id_for_billing)
+    if not gcs_path_exists(gcs_path, project_id_for_billing=project_id_for_billing):
         print(f"GCS path {gcs_path} does not exist. No deletion needed.")
         return True
 
@@ -82,8 +89,8 @@ def delete_gcs_path(gcs_path, recursive=True):
         for i in range(delete_attempts):
             try:
                 fs.rm(gcs_path, recursive=recursive)
-                time.sleep(2 + i * 2) # Allow for GCS consistency
-                if not fs.exists(gcs_path): # Verify deletion
+                time.sleep(2 + i * 2) 
+                if not fs.exists(gcs_path): 
                     print(f"Deletion confirmed for GCS path: {gcs_path}")
                     return True
                 else:
@@ -100,39 +107,61 @@ def delete_gcs_path(gcs_path, recursive=True):
                 elif i == delete_attempts - 1:
                     print(f"[ERROR] All attempts to delete {gcs_path} failed. Last error: {attempt_err}")
                     return False
-        return False # Should be unreachable if logic is correct
-    except Exception as delete_err:
+        return False 
+    except Exception as delete_err: 
         print(f"[ERROR] Overall exception during gcsfs deletion process for {gcs_path}: {delete_err}")
         return False
 
 # --- Hail Interaction ---
 
-def init_hail(gcs_hail_temp_dir, log_suffix="task"):
-    """
-    Initializes Hail with retry logic. Uses a unique log file name.
-    Exits fatally if initialization fails.
-    """
+def init_hail(gcs_hail_temp_dir, log_suffix="task", spark_configurations_json_str=None):
     print("Configuring Hail environment...")
-    # Ensure Hail temp dir is valid gs:// path
     if not gcs_hail_temp_dir or not gcs_hail_temp_dir.startswith("gs://"):
         print(f"FATAL ERROR: Invalid GCS path for Hail temp directory: {gcs_hail_temp_dir}")
         sys.exit(1)
 
+    spark_conf_dict = {}
+    if spark_configurations_json_str:
+        try:
+            config_list_of_strings = json.loads(spark_configurations_json_str)
+            for conf_item_str in config_list_of_strings:
+                if '=' in conf_item_str:
+                    key, value = conf_item_str.split('=', 1)
+                    spark_conf_dict[key.strip()] = value.strip()
+                else:
+                    print(f"[WARN] Hail Init: Skipping malformed Spark configuration string: {conf_item_str}")
+            if not spark_conf_dict:
+                 print("[INFO] Hail Init: No valid Spark configurations found in provided JSON string.")
+        except json.JSONDecodeError as e:
+            print(f"[WARN] Hail Init: Could not parse spark_configurations_json_str: {e}. Proceeding without these extra Spark confs.")
+            spark_conf_dict = {} # Default to empty if parsing fails
+    
+    if not spark_conf_dict:
+        print("[INFO] Hail Init: No explicit Spark configurations provided via JSON. Hail will use defaults and environment settings.")
+
     for attempt in range(_HAIL_INIT_ATTEMPTS):
         try:
             timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-            # Ensure log file is written to current working directory, which Nextflow manages
             log_file_name = f'hail_{timestamp}_{log_suffix}_{os.getpid()}.log'
             print(f"Attempting Hail initialization (Attempt {attempt + 1}/{_HAIL_INIT_ATTEMPTS}). Log: ./{log_file_name}")
+            print(f"Passing Spark configurations to hl.init: {spark_conf_dict if spark_conf_dict else 'None'}")
 
-            hl.init(tmp_dir=gcs_hail_temp_dir, log=log_file_name, default_reference='GRCh38')
+            hl.init(
+                tmp_dir=gcs_hail_temp_dir,
+                log=log_file_name,
+                default_reference='GRCh38',
+                conf=spark_conf_dict if spark_conf_dict else None,
+                master='local[*]' 
+            )
             print(f"Hail initialized successfully. Log file: ./{log_file_name}")
+            print(f"Spark context master: {hl.spark_context().master if hl.spark_context() else 'Not available'}")
+            if hl.spark_context():
+                 print(f"Spark default parallelism: {hl.spark_context().defaultParallelism}")
             return
         except Exception as e:
             print(f"Hail initialization failed (Attempt {attempt + 1}/{_HAIL_INIT_ATTEMPTS}): {e}")
             if attempt < _HAIL_INIT_ATTEMPTS - 1:
                 print("Retrying Hail initialization...")
-                # Stop any existing SparkContext to allow re-initialization
                 if hl.utils.java.Env.spark_context():
                     hl.stop()
                 time.sleep(10 * (attempt + 1))
@@ -140,39 +169,32 @@ def init_hail(gcs_hail_temp_dir, log_suffix="task"):
                 print("FATAL ERROR: Hail initialization failed after multiple attempts.")
                 sys.exit(1)
 
-def hail_path_exists(hail_path):
-    """
-    Checks if a Hail table/matrix table path directory exists using hl.hadoop_exists.
-    Falls back to gcs_path_exists for gs:// paths if Hail check fails unexpectedly.
-    """
+def hail_path_exists(hail_path, project_id_for_billing=None):
     if not hail_path:
         return False
     try:
         if hl.utils.java.Env.backend() is None:
-            print("[HAIL CHECK WARNING] Hail not initialized. Attempting fallback for GCS path check.")
+            print("[HAIL CHECK WARNING] Hail not initialized. Cannot use hl.hadoop_exists for this check.")
             if hail_path.startswith("gs://"):
-                return gcs_path_exists(hail_path)
-            return False # Cannot check non-GCS path without Hail
+                print(f"[HAIL CHECK INFO] Falling back to gcsfs check for {hail_path}")
+                return gcs_path_exists(hail_path, project_id_for_billing=project_id_for_billing)
+            return False
         return hl.hadoop_exists(hail_path)
     except Exception as e:
         print(f"[HAIL CHECK WARNING] Failed to check existence of {hail_path} using hl.hadoop_exists: {e}")
         if hail_path.startswith("gs://"):
             print(f"[HAIL CHECK INFO] Falling back to gcsfs check for {hail_path}")
-            return gcs_path_exists(hail_path)
+            return gcs_path_exists(hail_path, project_id_for_billing=project_id_for_billing)
         return False
 
-# --- Local DataFrame Caching (Mirroring original notebook) ---
+# --- Local DataFrame Caching ---
 
 def get_cache_dir(cache_dir_name=_LOCAL_CACHE_DIR_NAME):
-    """Creates and returns the path to the local cache directory."""
-    # Use current working directory for Nextflow tasks
-    # Nextflow manages task-specific work directories.
     cache_path = os.path.join(os.getcwd(), cache_dir_name)
     os.makedirs(cache_path, exist_ok=True)
     return cache_path
 
 def _local_cache_path(name_prefix, prs_id=None, cache_dir_name=_LOCAL_CACHE_DIR_NAME):
-    """Generates local cache file path, incorporating prs_id if provided."""
     cache_dir = get_cache_dir(cache_dir_name)
     filename_parts = [name_prefix]
     if prs_id:
@@ -181,7 +203,6 @@ def _local_cache_path(name_prefix, prs_id=None, cache_dir_name=_LOCAL_CACHE_DIR_
     return os.path.join(cache_dir, filename)
 
 def _load_from_local_cache(name_prefix, prs_id=None):
-    """Loads pandas DataFrame from local pickle cache."""
     path = _local_cache_path(name_prefix, prs_id)
     if os.path.exists(path):
         try:
@@ -201,25 +222,15 @@ def _load_from_local_cache(name_prefix, prs_id=None):
     return None
 
 def cache_result(name_prefix: str):
-    """
-    Decorator for caching pandas DataFrame results to local pickle files.
-    Mirrors the caching behavior of the original notebook.
-    The decorated function can optionally take a 'prs_id' kwarg (or as first arg if string)
-    to make the cache file name specific.
-    """
     def decorator(func):
         def wrapper(*args, **kwargs):
-            # Determine if prs_id is passed for cache naming specificity
             prs_id_arg = kwargs.get('prs_id')
             if not prs_id_arg and args and isinstance(args[0], str) and args[0].startswith("PGS"):
                 prs_id_arg = args[0]
-            dynamic_name = name_prefix
-            if prs_id_arg:
-                dynamic_name_with_id = f"{name_prefix}_{prs_id_arg}" # Used for messages and actual load/save
-            else:
-                dynamic_name_with_id = name_prefix # For messages if no ID, and actual load/save
+            
+            dynamic_name_with_id = f"{name_prefix}_{prs_id_arg}" if prs_id_arg else name_prefix
 
-            cached_df = _load_from_local_cache(name_prefix, prs_id_arg) # Pass potentially None prs_id_arg
+            cached_df = _load_from_local_cache(name_prefix, prs_id_arg)
             if cached_df is not None:
                 print(f"[LOCAL CACHE HIT] Loading '{dynamic_name_with_id}' from local cache.")
                 return cached_df
@@ -230,7 +241,6 @@ def cache_result(name_prefix: str):
             if isinstance(result_df, pd.DataFrame):
                 if not result_df.empty:
                     try:
-                        # Use the same logic for path generation as in _load_from_local_cache
                         save_path = _local_cache_path(name_prefix, prs_id_arg)
                         result_df.to_pickle(save_path)
                         print(f"[LOCAL CACHE SAVE] Saved '{dynamic_name_with_id}' to local cache: {save_path}")
@@ -244,49 +254,70 @@ def cache_result(name_prefix: str):
         return wrapper
     return decorator
 
-
 # --- File Downloading ---
 def download_file(url: str, local_gz_path: str, local_txt_path: str, log_id: str = "") -> str | None:
-    """
-    Downloads a file (potentially gzipped) from a URL and decompresses if needed.
-    Checks if the final decompressed file already exists locally first.
-    Local paths are relative to the current working directory.
-    """
     log_prefix = f"[{log_id}] " if log_id else ""
+    
+    abs_local_gz_path = os.path.join(os.getcwd(), local_gz_path)
+    abs_local_txt_path = os.path.join(os.getcwd(), local_txt_path)
+    
+    os.makedirs(os.path.dirname(abs_local_gz_path), exist_ok=True)
+    os.makedirs(os.path.dirname(abs_local_txt_path), exist_ok=True)
 
-    # Ensure local directories for these paths exist if they are nested
-    os.makedirs(os.path.dirname(local_gz_path), exist_ok=True)
-    os.makedirs(os.path.dirname(local_txt_path), exist_ok=True)
+    if os.path.exists(abs_local_txt_path):
+        print(f"{log_prefix}Using existing decompressed file: {abs_local_txt_path}")
+        return abs_local_txt_path
 
-    if os.path.exists(local_txt_path):
-        print(f"{log_prefix}Using existing decompressed file: {local_txt_path}")
-        return local_txt_path
+    # If input URL is GCS, copy directly using gcsfs
+    if url.startswith("gs://"):
+        print(f"{log_prefix}Copying GCS file from: {url}")
+        try:
+            fs = get_gcs_fs()
 
-    print(f"{log_prefix}Downloading file from: {url} to {local_gz_path}")
+            # Determine if download target should be gz or txt based on GCS URI
+            target_local_path_for_gcs_copy = abs_local_gz_path if url.endswith(".gz") else abs_local_txt_path
+            
+            fs.get(url, target_local_path_for_gcs_copy)
+            print(f"{log_prefix}Copied GCS file to: {target_local_path_for_gcs_copy}")
+
+            if url.endswith(".gz"): # Decompress if it was a .gz file from GCS
+                print(f"{log_prefix}Decompressing {target_local_path_for_gcs_copy} to {abs_local_txt_path}...")
+                with gzip.open(target_local_path_for_gcs_copy, 'rb') as f_in, open(abs_local_txt_path, 'wb') as f_out:
+                    shutil.copyfileobj(f_in, f_out)
+                if target_local_path_for_gcs_copy != abs_local_txt_path: # if gz path was used for download
+                    os.remove(target_local_path_for_gcs_copy)
+                print(f"{log_prefix}Decompression complete. Final file: {abs_local_txt_path}")
+                return abs_local_txt_path
+            else: # Was not a .gz file from GCS
+                return target_local_path_for_gcs_copy # which is abs_local_txt_path in this case
+
+        except Exception as e:
+            print(f"{log_prefix}ERROR: Failed to copy/decompress GCS file {url}. Error: {e}")
+            return None # Fall through to general error handling
+            
+    # Original HTTP/FTP download logic
+    print(f"{log_prefix}Downloading file from: {url} to {abs_local_gz_path}")
     try:
-        response = requests.get(url, stream=True, timeout=600) # 10 min timeout
+        response = requests.get(url, stream=True, timeout=600) 
         response.raise_for_status()
-        with open(local_gz_path, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=1024*1024): # 1MB chunks
+        with open(abs_local_gz_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=1024*1024): 
                 f.write(chunk)
-        print(f"{log_prefix}Download complete: {local_gz_path}")
+        print(f"{log_prefix}Download complete: {abs_local_gz_path}")
 
-        final_path_to_return = local_txt_path
-        if url.endswith('.gz') or local_gz_path.endswith('.gz'):
-            print(f"{log_prefix}Decompressing {local_gz_path} to {local_txt_path}...")
-            with gzip.open(local_gz_path, 'rb') as f_in, open(local_txt_path, 'wb') as f_out:
+        final_path_to_return = abs_local_txt_path
+        if url.endswith('.gz') or abs_local_gz_path.endswith('.gz'): # Check original URL and local path
+            print(f"{log_prefix}Decompressing {abs_local_gz_path} to {abs_local_txt_path}...")
+            with gzip.open(abs_local_gz_path, 'rb') as f_in, open(abs_local_txt_path, 'wb') as f_out:
                 shutil.copyfileobj(f_in, f_out)
-            os.remove(local_gz_path)
-            print(f"{log_prefix}Decompression complete. Final file: {local_txt_path}")
+            if abs_local_gz_path != abs_local_txt_path: # If .gz was downloaded to a different name than the final .txt
+                os.remove(abs_local_gz_path)
+            print(f"{log_prefix}Decompression complete. Final file: {abs_local_txt_path}")
         else:
-            # If not gzipped, the downloaded file is the final file.
-            # If local_gz_path is different from local_txt_path, move it.
-            if local_gz_path != local_txt_path:
-                shutil.move(local_gz_path, local_txt_path)
-            else: # They are the same, gz_path is actually the final txt_path
-                 pass
-            print(f"{log_prefix}File is not gzipped. Final file: {local_txt_path}")
-
+            if abs_local_gz_path != abs_local_txt_path:
+                shutil.move(abs_local_gz_path, abs_local_txt_path)
+            print(f"{log_prefix}File is not gzipped. Final file: {abs_local_txt_path}")
+        
         return final_path_to_return
 
     except requests.exceptions.Timeout:
@@ -297,9 +328,9 @@ def download_file(url: str, local_gz_path: str, local_txt_path: str, log_id: str
         print(f"{log_prefix}ERROR: Failed during download/decompression for {url}. Error: {e}")
     finally:
         # Cleanup attempt for gz file if txt file wasn't created or if it was a non-gz file that failed
-        if os.path.exists(local_gz_path) and not os.path.exists(local_txt_path):
+        if os.path.exists(abs_local_gz_path) and not os.path.exists(abs_local_txt_path):
             try:
-                os.remove(local_gz_path)
+                os.remove(abs_local_gz_path)
             except OSError:
                 pass
     return None
