@@ -215,7 +215,46 @@ def execute_script(script_name_in_src, command_args, config, log_dir_local, step
 
         if process.returncode != 0:
             logger.error(f"FATAL: [{step_log_identifier}] Script '{script_name_in_src}' failed with exit code {process.returncode}.")
-            logger.error(f"FATAL: [{step_log_identifier}] Consult the log file for details: {log_file_path}")
+            # The full log path is crucial for debugging if display fails or is incomplete.
+            logger.error(f"FATAL: [{step_log_identifier}] Full log available at: {log_file_path}")
+            
+            # Check if the log file exists before attempting to read and display its content.
+            if os.path.exists(log_file_path):
+                # Open and read the log file. If this fails, an IOError will propagate.
+                with open(log_file_path, 'r') as opened_log_file:
+                    log_lines = opened_log_file.readlines()
+                
+                number_of_log_lines = len(log_lines)
+                
+                if number_of_log_lines > 0:
+                    # Output log snippets directly to sys.stderr to avoid logger's formatting on each line.
+                    sys.stderr.write(f"\nINFO: [{step_log_identifier}] Displaying content from log file '{os.path.basename(log_file_path)}':\n")
+                    sys.stderr.write("-" * 80 + "\n") # Visual separator for clarity
+                    
+                    if number_of_log_lines > 100:
+                        # Log file is longer than 100 lines; display first and last 50 lines.
+                        sys.stderr.write(f"--- First 50 lines of {os.path.basename(log_file_path)} ---\n")
+                        for line_content_data in log_lines[:50]:
+                            sys.stderr.write(line_content_data) # line_content_data includes its own newline
+                        sys.stderr.write("...\n[Log content truncated - full log has " + str(number_of_log_lines) + " lines]\n...\n")
+                        sys.stderr.write(f"--- Last 50 lines of {os.path.basename(log_file_path)} ---\n")
+                        for line_content_data in log_lines[-50:]:
+                            sys.stderr.write(line_content_data) # line_content_data includes its own newline
+                    else:
+                        # Log file has 100 lines or less; display the entire content.
+                        sys.stderr.write(f"--- Full content of {os.path.basename(log_file_path)} (Total {number_of_log_lines} lines) ---\n")
+                        for line_content_data in log_lines:
+                            sys.stderr.write(line_content_data) # line_content_data includes its own newline
+                    sys.stderr.write("-" * 80 + "\n")
+                    sys.stderr.write(f"--- End of displayed log content from {os.path.basename(log_file_path)} ---\n\n")
+                else:
+                    # Log file exists but is empty.
+                    logger.warning(f"WARNING: [{step_log_identifier}] Log file '{log_file_path}' was found but is empty. No content to display.")
+            else:
+                # Log file does not exist.
+                logger.warning(f"WARNING: [{step_log_identifier}] Log file '{log_file_path}' not found. Cannot display content.")
+            
+            # Exit the main script with the return code of the failed subprocess.
             sys.exit(process.returncode)
         
         logger.info(f"INFO: [{step_log_identifier}] Script '{script_name_in_src}' completed successfully.")
