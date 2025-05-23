@@ -231,7 +231,7 @@ def import_weights_as_ht(gcs_ht_path: str, prs_id: str) -> hl.Table | None:
         if prs_ht.count() == 0:
              print(f"[{prs_id}] ERROR: Imported PRS HailTable from {gcs_ht_path} has 0 rows.")
              return None
-        required_fields = {'contig': hl.tstr, 'position': hl.tint64, 'weight': hl.tfloat64, 'effect_allele': hl.tstr}
+        required_fields = {'contig': hl.tstr, 'position': hl.tint32, 'weight': hl.tfloat64, 'effect_allele': hl.tstr}
         missing_or_wrong_type = []
         for field, expected_type in required_fields.items():
              if field not in prs_ht.row:
@@ -586,6 +586,7 @@ def main():
                 print(f"[{prs_id}] Converting prepared weights to Hail Table and uploading to checkpoint: {intermediate_weights_gcs_path}")
                 try:
                     ht_weights = hl.Table.from_pandas(score_df_prepared, key=['contig', 'position'])
+                    ht_weights = ht_weights.annotate(position=hl.int32(ht_weights.position))
                     ht_weights = ht_weights.annotate(locus=hl.locus(ht_weights.contig, ht_weights.position, reference_genome='GRCh38'))
                     ht_weights = ht_weights.key_by('locus')
                     ht_weights.write(intermediate_weights_gcs_path, overwrite=True)
