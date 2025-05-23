@@ -150,8 +150,8 @@ def init_hail(gcs_hail_temp_dir, log_suffix="task", spark_configurations_json_st
                 tmp_dir=gcs_hail_temp_dir,
                 log=log_file_name,
                 default_reference='GRCh38',
-                conf=spark_conf_dict if spark_conf_dict else None,
-                master='local[*]' 
+                spark_conf=spark_conf_dict if spark_conf_dict else None,
+                master='local[*]'
             )
             print(f"Hail initialized successfully. Log file: ./{log_file_name}")
             print(f"Spark context master: {hl.spark_context().master if hl.spark_context() else 'Not available'}")
