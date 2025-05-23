@@ -292,8 +292,6 @@ def main():
 
     base_cohort_vds = None # Initialize VDS variable
 
-    base_cohort_vds = None # Initialize VDS variable
-
     # --- Check for Existing VDS Checkpoint ---
     # Uses the specified output path as the checkpoint location
     if hail_path_exists(args.base_cohort_vds_path_out): # Uses utils.hail_path_exists
