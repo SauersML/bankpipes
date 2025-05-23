@@ -151,25 +151,20 @@ class PipelineConfig:
             # They will be active when jobs are submitted to Dataproc.
             "spark.dynamicAllocation.enabled=true",
 
-            # --- Shuffle Behavior ---
-            # Default number of partitions for Spark SQL shuffles.
-            # This can also be set/overridden by hl.utils.default_n_partitions for Hail-specific shuffles.
-            "spark.sql.shuffle.partitions=2001",
-
             # --- Memory Management and Serialization ---
             # Kryo is generally faster than Java serialization for Spark.
             "spark.serializer=org.apache.spark.serializer.KryoSerializer",
 
             # --- Garbage Collection (More relevant for executors on a cluster) ---
-            # Using G1GC is common for Spark workloads. InitiatingHeapOccupancyPercent can tune when G1GC kicks in.
+            # Using G1GC. InitiatingHeapOccupancyPercent can tune when G1GC kicks in.
             # These apply to the JVMs of the executors.
             "spark.executor.defaultJavaOptions=-XX:+UseG1GC -XX:InitiatingHeapOccupancyPercent=35 -XX:+PrintGCDetails -XX:+PrintGCTimeStamps"
-            # Adding GC logging to executor opts can be helpful for debugging performance on cluster.
-            # For the driver, similar options can be set if needed, often via PYSPARK_SUBMIT_ARGS or cluster submission parameters.
         ]
         processed_spark_list = [
             s.replace("{{GOOGLE_BILLING_PROJECT}}", self.google_billing_project) for s in spark_conf_list_template
         ]
+        dynamic_shuffle_partitions = max(200, (os.cpu_count() or 1) * 4)
+        processed_spark_list.append(f"spark.sql.shuffle.partitions={dynamic_shuffle_partitions}")
         self.spark_conf_json_str = json.dumps(processed_spark_list)
 
         logger.info("Pipeline configuration loaded and processed:")
