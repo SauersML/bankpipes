@@ -1,7 +1,7 @@
 """
 process_prs_model.py
 
-Nextflow task script to:
+Script to:
   1. Download and prepare PRS weight table (checking for existing intermediates)
   2. Extract genomic intervals (checking for existing intermediates)
   3. Load base VDS and filter by those intervals
@@ -229,9 +229,9 @@ def import_weights_as_ht(gcs_ht_path: str, prs_id: str) -> hl.Table | None:
 
         # --- Verification after import ---
         if prs_ht.count() == 0:
-             print(f"[{prs_id}] ERROR: Imported PRS HailTable from {gcs_csv_path} has 0 rows.")
+             print(f"[{prs_id}] ERROR: Imported PRS HailTable from {gcs_ht_path} has 0 rows.")
              return None
-        required_fields = {'contig': hl.tstr, 'position': hl.tint32, 'weight': hl.tfloat64, 'effect_allele': hl.tstr}
+        required_fields = {'contig': hl.tstr, 'position': hl.tint64, 'weight': hl.tfloat64, 'effect_allele': hl.tstr}
         missing_or_wrong_type = []
         for field, expected_type in required_fields.items():
              if field not in prs_ht.row:
@@ -266,7 +266,7 @@ def import_weights_as_ht(gcs_ht_path: str, prs_id: str) -> hl.Table | None:
         return prs_ht
 
     except Exception as e:
-        print(f"[{prs_id}] ERROR loading prepared PRS table '{gcs_csv_path}' into Hail: {e}")
+        print(f"[{prs_id}] ERROR loading prepared PRS table '{gcs_ht_path}' into Hail: {e}")
         return None
 
 
@@ -395,7 +395,6 @@ def annotate_and_score(vds_filtered: hl.vds.VariantDataset, prs_ht: hl.Table, pr
 
         # Calculate dosage using the correct function
         print(f"[{prs_id}] Calculating effect allele dosage...")
-        mt = mt.unfilter_entries() # GT is available for all samples at these variants
         mt = mt.annotate_entries(effect_allele_count=calculate_effect_allele_dosage(mt)) # Pass the row context
 
         # Calculate per-variant contribution, handling missing dosage or weight
