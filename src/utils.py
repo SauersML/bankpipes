@@ -114,8 +114,17 @@ def delete_gcs_path(gcs_path, project_id_for_billing=None, recursive=True):
 
 # --- Hail Interaction ---
 
-def init_hail(gcs_hail_temp_dir, log_suffix="task", spark_configurations_json_str=None):
-    print("Configuring Hail environment...")
+def init_hail(gcs_hail_temp_dir, log_suffix="task", spark_configurations_json_str=None, cluster_mode="local"):
+    """
+    Initializes Hail.
+    
+    Args:
+        gcs_hail_temp_dir (str): GCS path for Hail's temporary directory.
+        log_suffix (str): Suffix for the Hail log file name.
+        spark_configurations_json_str (str, optional): JSON string of Spark configurations.
+        cluster_mode (str): Execution mode. "local" for local Spark, "dataproc_yarn" for Dataproc.
+    """
+    print(f"Configuring Hail environment for cluster_mode: {cluster_mode}")
     if not gcs_hail_temp_dir or not gcs_hail_temp_dir.startswith("gs://"):
         print(f"FATAL ERROR: Invalid GCS path for Hail temp directory: {gcs_hail_temp_dir}")
         sys.exit(1)
@@ -136,35 +145,47 @@ def init_hail(gcs_hail_temp_dir, log_suffix="task", spark_configurations_json_st
             print(f"[WARN] Hail Init: Could not parse spark_configurations_json_str: {e}. Proceeding without these extra Spark confs.")
             spark_conf_dict = {} # Default to empty if parsing fails
     
-    if not spark_conf_dict:
-        print("[INFO] Hail Init: No explicit Spark configurations provided via JSON. Hail will use defaults and environment settings.")
+    if not spark_conf_dict: # This check is after potential parsing, so it reflects the actual state.
+        print("[INFO] Hail Init: No explicit Spark configurations provided or parsed. Hail may use defaults and environment settings for some properties.")
+
+    # Determine Spark master based on cluster_mode
+    spark_master = "local[*]" if cluster_mode == "local" else None
+    if cluster_mode != "local":
+        print(f"Hail will attempt to connect to an existing Spark cluster (master={spark_master if spark_master else 'environment default e.g. YARN'}).")
 
     for attempt in range(_HAIL_INIT_ATTEMPTS):
         try:
+            # Hail is stopped before attempting to re-initialize
+            if hl.utils.java.Env.backend() is not None:
+                print("Stopping existing Hail session before initializing a new one...")
+                hl.stop()
+                time.sleep(5) # Give Spark a moment to release resources
+
             timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
             log_file_name = f'hail_{timestamp}_{log_suffix}_{os.getpid()}.log'
-            print(f"Attempting Hail initialization (Attempt {attempt + 1}/{_HAIL_INIT_ATTEMPTS}). Log: ./{log_file_name}")
-            print(f"Passing Spark configurations to hl.init: {spark_conf_dict if spark_conf_dict else 'None'}")
+            print(f"Attempting Hail initialization (Attempt {attempt + 1}/{_HAIL_INIT_ATTEMPTS}). Log: ./{log_file_name}, Master: {spark_master if spark_master else 'YARN/Environment Default'}")
+            print(f"Passing Spark configurations to hl.init: {spark_conf_dict if spark_conf_dict else 'None provided directly to spark_conf'}")
 
             hl.init(
                 tmp_dir=gcs_hail_temp_dir,
                 log=log_file_name,
                 default_reference='GRCh38',
-                spark_conf=spark_conf_dict if spark_conf_dict else None,
-                master='local[*]'
+                spark_conf=spark_conf_dict if spark_conf_dict else None, # Pass parsed dict
+                master=spark_master,
+                idempotent=True # Allows re-initialization with same parameters without error
             )
             print(f"Hail initialized successfully. Log file: ./{log_file_name}")
-            print(f"Spark context master: {hl.spark_context().master if hl.spark_context() else 'Not available'}")
-            if hl.spark_context():
-                 print(f"Spark default parallelism: {hl.spark_context().defaultParallelism}")
+            current_sc = hl.spark_context()
+            print(f"Spark context master: {current_sc.master if current_sc else 'Not available'}")
+            if current_sc:
+                 print(f"Spark application ID: {current_sc.applicationId}")
+                 print(f"Spark default parallelism: {current_sc.defaultParallelism}")
             return
         except Exception as e:
             print(f"Hail initialization failed (Attempt {attempt + 1}/{_HAIL_INIT_ATTEMPTS}): {e}")
             if attempt < _HAIL_INIT_ATTEMPTS - 1:
                 print("Retrying Hail initialization...")
-                sc = hl.spark_context()
-                if sc is not None: # Check if the SparkContext object exists
-                    hl.stop()
+                # hl.stop() is called at the beginning of the try block in next attempt
                 time.sleep(10 * (attempt + 1))
             else:
                 print("FATAL ERROR: Hail initialization failed after multiple attempts.")
