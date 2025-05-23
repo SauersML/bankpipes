@@ -152,180 +152,179 @@ class PipelineConfig:
         logger.info(f"  Run Hail Temp GCS Dir: {self.gcs_run_hail_temp_dir}")
         logger.info(f"  Models CSV Path: {self.models_csv_path}")
 
-
 def execute_script(script_name_in_src, command_args, config, log_dir_local, step_log_identifier, cwd_for_script=None):
-    """
-    Executes a Python script located in the 'src' directory using a subprocess.
-    Manages environment variables (PYSPARK_PYTHON, PYTHONPATH) for the subprocess.
-    Logs stdout and stderr to a specified file.
-    Provides periodic status updates including new log lines or system resource usage.
+    """
+    Executes a Python script located in the 'src' directory using a subprocess.
+    Manages environment variables (PYSPARK_PYTHON, PYTHONPATH) for the subprocess.
+    Logs stdout and stderr to a specified file.
+    Provides periodic status updates including new log lines or system resource usage.
 
-    Args:
-        script_name_in_src (str): Filename of the script in the 'src' directory (e.g., "fetch_phenotypes.py").
-        command_args (list): A list of command-line arguments to pass to the script.
-        config (PipelineConfig): The pipeline's configuration object.
-        log_dir_local (str): The local directory where log files for script executions will be stored.
-        step_log_identifier (str): A unique string to identify this execution step in log filenames.
-        cwd_for_script (str, optional): The working directory from which to run the script.
-                                       Defaults to the current working directory of main.py.
+    Args:
+        script_name_in_src (str): Filename of the script in the 'src' directory (e.g., "fetch_phenotypes.py").
+        command_args (list): A list of command-line arguments to pass to the script.
+        config (PipelineConfig): The pipeline's configuration object.
+        log_dir_local (str): The local directory where log files for script executions will be stored.
+        step_log_identifier (str): A unique string to identify this execution step in log filenames.
+        cwd_for_script (str, optional): The working directory from which to run the script.
+                                       Defaults to the current working directory of main.py.
 
-    Returns:
-        str: The full path to the log file generated for this script execution.
+    Returns:
+        str: The full path to the log file generated for this script execution.
 
-    Raises:
-        SystemExit: If the script is not found or if the script execution fails (non-zero exit code).
-    """
-    script_full_path = os.path.join(config.script_dir, "src", script_name_in_src)
-    if not os.path.isfile(script_full_path):
-        logger.error(f"FATAL: [{step_log_identifier}] Script file not found at {script_full_path}")
-        sys.exit(1)
+    Raises:
+        SystemExit: If the script is not found or if the script execution fails (non-zero exit code).
+    """
+    script_full_path = os.path.join(config.script_dir, "src", script_name_in_src)
+    if not os.path.isfile(script_full_path):
+        logger.error(f"FATAL: [{step_log_identifier}] Script file not found at {script_full_path}")
+        sys.exit(1)
 
-    command = [config.python_executable, script_full_path] + command_args
-    log_file_name = f"{step_log_identifier}_{config.run_timestamp}.log"
-    log_file_path = os.path.join(log_dir_local, log_file_name)
+    command = [config.python_executable, script_full_path] + command_args
+    log_file_name = f"{step_log_identifier}_{config.run_timestamp}.log"
+    log_file_path = os.path.join(log_dir_local, log_file_name)
 
-    logger.info(f"[{step_log_identifier}] Executing command: {' '.join(command)}")
-    logger.info(f"[{step_log_identifier}] Log file for this step: {log_file_path}")
-    if cwd_for_script:
-        logger.info(f"[{step_log_identifier}] Setting working directory for script execution: {cwd_for_script}")
+    logger.info(f"[{step_log_identifier}] Executing command: {' '.join(command)}")
+    logger.info(f"[{step_log_identifier}] Log file for this step: {log_file_path}")
+    if cwd_for_script:
+        logger.info(f"[{step_log_identifier}] Setting working directory for script execution: {cwd_for_script}")
 
-    process_env = os.environ.copy()
-    process_env["PYSPARK_PYTHON"] = config.python_executable
-    src_directory_path = os.path.join(config.script_dir, "src")
-    current_pythonpath = process_env.get('PYTHONPATH', '')
-    if current_pythonpath:
-        process_env['PYTHONPATH'] = f"{src_directory_path}{os.pathsep}{current_pythonpath}"
-    else:
-        process_env['PYTHONPATH'] = src_directory_path
-    logger.debug(f"[{step_log_identifier}] Subprocess PYTHONPATH set to: {process_env['PYTHONPATH']}")
+    process_env = os.environ.copy()
+    process_env["PYSPARK_PYTHON"] = config.python_executable
+    src_directory_path = os.path.join(config.script_dir, "src")
+    current_pythonpath = process_env.get('PYTHONPATH', '')
+    if current_pythonpath:
+        process_env['PYTHONPATH'] = f"{src_directory_path}{os.pathsep}{current_pythonpath}"
+    else:
+        process_env['PYTHONPATH'] = src_directory_path
+    logger.debug(f"[{step_log_identifier}] Subprocess PYTHONPATH set to: {process_env['PYTHONPATH']}")
 
-    process = None
-    last_log_line_count = 0
-    monitoring_interval_seconds = 15
+    process = None
+    last_log_line_count = 0
+    monitoring_interval_seconds = 15
 
-    try:
-        # log directory exists before opening log file for subprocess
-        os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
+    try:
+        # log directory exists before opening log file for subprocess
+        os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
 
-        with open(log_file_path, 'w') as log_file_handle:
-            process = subprocess.Popen(
-                command,
-                env=process_env,
-                stdout=log_file_handle,
-                stderr=subprocess.STDOUT,
-                text=True,
-                cwd=cwd_for_script,
-            )
-        logger.info(f"[{step_log_identifier}] Subprocess '{script_name_in_src}' started (PID: {process.pid}). Monitoring progress every {monitoring_interval_seconds} seconds...")
+        with open(log_file_path, 'w') as log_file_handle:
+            process = subprocess.Popen(
+                command,
+                env=process_env,
+                stdout=log_file_handle,
+                stderr=subprocess.STDOUT,
+                text=True,
+                cwd=cwd_for_script,
+            )
+        logger.info(f"[{step_log_identifier}] Subprocess '{script_name_in_src}' started (PID: {process.pid}). Monitoring progress every {monitoring_interval_seconds} seconds...")
 
-        while process.poll() is None: # While subprocess is running
-            time.sleep(monitoring_interval_seconds)
+        while process.poll() is None: # While subprocess is running
+            time.sleep(monitoring_interval_seconds)
 
-            new_lines_printed_this_interval = False
-            try:
-                if os.path.exists(log_file_path):
-                    with open(log_file_path, 'r') as current_log_read_handle:
-                        all_lines = current_log_read_handle.readlines()
-                    current_line_count = len(all_lines)
+            new_lines_printed_this_interval = False
+            try:
+                if os.path.exists(log_file_path):
+                    with open(log_file_path, 'r') as current_log_read_handle:
+                        all_lines = current_log_read_handle.readlines()
+                    current_line_count = len(all_lines)
 
-                    if current_line_count > last_log_line_count:
-                        for i in range(last_log_line_count, current_line_count):
-                            logger.info(f"[{step_log_identifier} LOG]: {all_lines[i].strip()}")
-                        last_log_line_count = current_line_count
-                        new_lines_printed_this_interval = True
-                else:
-                    # Log file might not have been created yet if script is very fast or stdout buffer not flushed
-                    pass
-            except Exception as log_read_e:
-                logger.warning(f"[{step_log_identifier}] Error reading log file {log_file_path} for progress: {log_read_e}")
+                    if current_line_count > last_log_line_count:
+                        for i in range(last_log_line_count, current_line_count):
+                            logger.info(f"[{step_log_identifier} LOG]: {all_lines[i].strip()}")
+                        last_log_line_count = current_line_count
+                        new_lines_printed_this_interval = True
+                else:
+                    # Log file might not have been created yet if script is very fast or stdout buffer not flushed
+                    pass
+            except Exception as log_read_e:
+                logger.warning(f"[{step_log_identifier}] Error reading log file {log_file_path} for progress: {log_read_e}")
 
-            if not new_lines_printed_this_interval:
-                try:
-                    # Get system-wide CPU and RAM usage.
-                    cpu_usage = psutil.cpu_percent(interval=0.1) # Brief blocking call for current usage
-                    ram_info = psutil.virtual_memory()
-                    ram_usage_percent = ram_info.percent
-                    logger.info(f"[{step_log_identifier}] Still running '{script_name_in_src}' (PID: {process.pid}). No new log output. System CPU: {cpu_usage}%, System RAM: {ram_usage_percent}% used.")
-                except NameError:
-                    logger.warning(f"[{step_log_identifier}] psutil not available. Cannot report CPU/RAM. Script '{script_name_in_src}' (PID: {process.pid}) is still running.")
-                except Exception as psutil_e:
-                    logger.warning(f"[{step_log_identifier}] Could not retrieve system stats: {psutil_e}. Script '{script_name_in_src}' (PID: {process.pid}) is still running.")
-    
-        # Subprocess finished, get final return code
-        return_code = process.wait() # process resources are cleaned up and get final code.
+            if not new_lines_printed_this_interval:
+                try:
+                    # Get system-wide CPU and RAM usage.
+                    cpu_usage = psutil.cpu_percent(interval=0.1) # Brief blocking call for current usage
+                    ram_info = psutil.virtual_memory()
+                    ram_usage_percent = ram_info.percent
+                    logger.info(f"[{step_log_identifier}] Still running '{script_name_in_src}' (PID: {process.pid}). No new log output. System CPU: {cpu_usage}%, System RAM: {ram_usage_percent}% used.")
+                except NameError:
+                    logger.warning(f"[{step_log_identifier}] psutil not available. Cannot report CPU/RAM. Script '{script_name_in_src}' (PID: {process.pid}) is still running.")
+                except Exception as psutil_e:
+                    logger.warning(f"[{step_log_identifier}] Could not retrieve system stats: {psutil_e}. Script '{script_name_in_src}' (PID: {process.pid}) is still running.")
+    
+        # Subprocess finished, get final return code
+        return_code = process.wait() # process resources are cleaned up and get final code.
 
-        # Capture any final log lines written between the last check and process termination
-        try:
-            if os.path.exists(log_file_path):
-                with open(log_file_path, 'r') as final_log_read_handle:
-                    all_lines = final_log_read_handle.readlines()
-                current_line_count = len(all_lines)
-                if current_line_count > last_log_line_count:
-                    logger.info(f"[{step_log_identifier}] Capturing final log lines from '{script_name_in_src}':")
-                    for i in range(last_log_line_count, current_line_count):
-                        logger.info(f"[{step_log_identifier} LOG]: {all_lines[i].strip()}")
-        except Exception as final_log_read_e:
-            logger.warning(f"[{step_log_identifier}] Error reading final log lines from {log_file_path}: {final_log_read_e}")
-        
-        # Process results based on return code
-        if return_code != 0:
-            logger.error(f"FATAL: [{step_log_identifier}] Script '{script_name_in_src}' failed with exit code {return_code}.")
-            logger.error(f"FATAL: [{step_log_identifier}] Full log available at: {log_file_path}")
-            if os.path.exists(log_file_path):
-                try:
-                    with open(log_file_path, 'r') as opened_log_file:
-                        log_lines = opened_log_file.readlines()
-                    number_of_log_lines = len(log_lines)
-                    if number_of_log_lines > 0:
-                        sys.stderr.write(f"\nINFO: [{step_log_identifier}] Displaying content from log file '{os.path.basename(log_file_path)}':\n")
-                        sys.stderr.write("-" * 80 + "\n")
-                        if number_of_log_lines > 100:
-                            sys.stderr.write(f"--- First 50 lines of {os.path.basename(log_file_path)} ---\n")
-                            for line_content_data in log_lines[:50]: sys.stderr.write(line_content_data)
-                            sys.stderr.write("...\n[Log content truncated - full log has " + str(number_of_log_lines) + " lines]\n...\n")
-                            sys.stderr.write(f"--- Last 50 lines of {os.path.basename(log_file_path)} ---\n")
-                            for line_content_data in log_lines[-50:]: sys.stderr.write(line_content_data)
-                        else:
-                            sys.stderr.write(f"--- Full content of {os.path.basename(log_file_path)} (Total {number_of_log_lines} lines) ---\n")
-                            for line_content_data in log_lines: sys.stderr.write(line_content_data)
-                        sys.stderr.write("-" * 80 + "\n")
-                        sys.stderr.write(f"--- End of displayed log content from {os.path.basename(log_file_path)} ---\n\n")
-                    else:
-                        logger.warning(f"WARNING: [{step_log_identifier}] Log file '{log_file_path}' was found but is empty.")
-                except IOError as log_display_err:
-                    logger.error(f"ERROR: [{step_log_identifier}] Could not read log file '{log_file_path}' for display after script failure: {log_display_err}")
-            else:
-                logger.warning(f"WARNING: [{step_log_identifier}] Log file '{log_file_path}' not found after script failure.")
-            sys.exit(return_code)
-        
-        logger.info(f"INFO: [{step_log_identifier}] Script '{script_name_in_src}' completed successfully with exit code {return_code}.")
-        return log_file_path
+        # Capture any final log lines written between the last check and process termination
+        try:
+            if os.path.exists(log_file_path):
+                with open(log_file_path, 'r') as final_log_read_handle:
+                    all_lines = final_log_read_handle.readlines()
+                current_line_count = len(all_lines)
+                if current_line_count > last_log_line_count:
+                    logger.info(f"[{step_log_identifier}] Capturing final log lines from '{script_name_in_src}':")
+                    for i in range(last_log_line_count, current_line_count):
+                        logger.info(f"[{step_log_identifier} LOG]: {all_lines[i].strip()}")
+        except Exception as final_log_read_e:
+            logger.warning(f"[{step_log_identifier}] Error reading final log lines from {log_file_path}: {final_log_read_e}")
+        
+        # Process results based on return code
+        if return_code != 0:
+            logger.error(f"FATAL: [{step_log_identifier}] Script '{script_name_in_src}' failed with exit code {return_code}.")
+            logger.error(f"FATAL: [{step_log_identifier}] Full log available at: {log_file_path}")
+            if os.path.exists(log_file_path):
+                try:
+                    with open(log_file_path, 'r') as opened_log_file:
+                        log_lines = opened_log_file.readlines()
+                    number_of_log_lines = len(log_lines)
+                    if number_of_log_lines > 0:
+                        sys.stderr.write(f"\nINFO: [{step_log_identifier}] Displaying content from log file '{os.path.basename(log_file_path)}':\n")
+                        sys.stderr.write("-" * 80 + "\n")
+                        if number_of_log_lines > 100:
+                            sys.stderr.write(f"--- First 50 lines of {os.path.basename(log_file_path)} ---\n")
+                            for line_content_data in log_lines[:50]: sys.stderr.write(line_content_data)
+                            sys.stderr.write("...\n[Log content truncated - full log has " + str(number_of_log_lines) + " lines]\n...\n")
+                            sys.stderr.write(f"--- Last 50 lines of {os.path.basename(log_file_path)} ---\n")
+                            for line_content_data in log_lines[-50:]: sys.stderr.write(line_content_data)
+                        else:
+                            sys.stderr.write(f"--- Full content of {os.path.basename(log_file_path)} (Total {number_of_log_lines} lines) ---\n")
+                            for line_content_data in log_lines: sys.stderr.write(line_content_data)
+                        sys.stderr.write("-" * 80 + "\n")
+                        sys.stderr.write(f"--- End of displayed log content from {os.path.basename(log_file_path)} ---\n\n")
+                    else:
+                        logger.warning(f"WARNING: [{step_log_identifier}] Log file '{log_file_path}' was found but is empty.")
+                except IOError as log_display_err:
+                    logger.error(f"ERROR: [{step_log_identifier}] Could not read log file '{log_file_path}' for display after script failure: {log_display_err}")
+            else:
+                logger.warning(f"WARNING: [{step_log_identifier}] Log file '{log_file_path}' not found after script failure.")
+            sys.exit(return_code)
+        
+        logger.info(f"INFO: [{step_log_identifier}] Script '{script_name_in_src}' completed successfully with exit code {return_code}.")
+        return log_file_path
 
-    except FileNotFoundError:
-        logger.error(f"FATAL: [{step_log_identifier}] Python executable '{config.python_executable}' not found. Cannot run script '{script_name_in_src}'.")
-        sys.exit(1)
-    except OSError as e:
-        logger.error(f"FATAL: [{step_log_identifier}] OS error while trying to run script '{script_name_in_src}': {e}")
-        sys.exit(1)
-    except Exception as e:
-        logger.error(f"FATAL: [{step_log_identifier}] An unexpected error occurred while managing subprocess for '{script_name_in_src}': {e}")
-        logger.error(f"FATAL: [{step_log_identifier}] Check log for any partial output: {log_file_path}")
-        sys.exit(1)
-    finally:
-        # the subprocess is terminated if the orchestrator exits unexpectedly
-        if process and process.poll() is None:
-            logger.warning(f"[{step_log_identifier}] Orchestrator is exiting; attempting to terminate subprocess '{script_name_in_src}' (PID: {process.pid}).")
-            try:
-                process.terminate() # Send SIGTERM
-                process.wait(timeout=10) # Wait up to 10 seconds for graceful termination
-                logger.info(f"[{step_log_identifier}] Subprocess '{script_name_in_src}' (PID: {process.pid}) terminated.")
-            except subprocess.TimeoutExpired:
-                logger.warning(f"[{step_log_identifier}] Subprocess '{script_name_in_src}' (PID: {process.pid}) did not terminate gracefully after 10s. Sending SIGKILL.")
-                process.kill() # Force kill
-                process.wait() # Wait for kill to complete
-                logger.info(f"[{step_log_identifier}] Subprocess '{script_name_in_src}' (PID: {process.pid}) killed.")
-            except Exception as term_err:
-                logger.error(f"[{step_log_identifier}] Error during subprocess termination for '{script_name_in_src}' (PID: {process.pid if process else 'unknown'}): {term_err}")
+    except FileNotFoundError:
+        logger.error(f"FATAL: [{step_log_identifier}] Python executable '{config.python_executable}' not found. Cannot run script '{script_name_in_src}'.")
+        sys.exit(1)
+    except OSError as e:
+        logger.error(f"FATAL: [{step_log_identifier}] OS error while trying to run script '{script_name_in_src}': {e}")
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"FATAL: [{step_log_identifier}] An unexpected error occurred while managing subprocess for '{script_name_in_src}': {e}")
+        logger.error(f"FATAL: [{step_log_identifier}] Check log for any partial output: {log_file_path}")
+        sys.exit(1)
+    finally:
+        # the subprocess is terminated if the orchestrator exits unexpectedly
+        if process and process.poll() is None:
+            logger.warning(f"[{step_log_identifier}] Orchestrator is exiting; attempting to terminate subprocess '{script_name_in_src}' (PID: {process.pid}).")
+            try:
+                process.terminate() # Send SIGTERM
+                process.wait(timeout=10) # Wait up to 10 seconds for graceful termination
+                logger.info(f"[{step_log_identifier}] Subprocess '{script_name_in_src}' (PID: {process.pid}) terminated.")
+            except subprocess.TimeoutExpired:
+                logger.warning(f"[{step_log_identifier}] Subprocess '{script_name_in_src}' (PID: {process.pid}) did not terminate gracefully after 10s. Sending SIGKILL.")
+                process.kill() # Force kill
+                process.wait() # Wait for kill to complete
+                logger.info(f"[{step_log_identifier}] Subprocess '{script_name_in_src}' (PID: {process.pid}) killed.")
+            except Exception as term_err:
+                logger.error(f"[{step_log_identifier}] Error during subprocess termination for '{script_name_in_src}' (PID: {process.pid if process else 'unknown'}): {term_err}")
 
 def run_pipeline(config: PipelineConfig):
     """
