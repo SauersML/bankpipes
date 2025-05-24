@@ -55,29 +55,55 @@ log = logging.getLogger("main")
 #  UTILITIES
 # ────────────────────────────────────────────────────────────────────────────────
 def _run_subprocess(cmd: list[str], env: dict[str, str], log_path: Path, step: str) -> int:
-    """Run *cmd* synchronously, teeing stdout/stderr to *log_path* and return rc."""
+    """Run *cmd* synchronously, write its output to *log_path*, and stream both status and new log lines to the console."""
     with log_path.open("w") as fh:
         proc = subprocess.Popen(cmd, env=env, stdout=fh, stderr=subprocess.STDOUT, text=True)
+
     log.info("%s  –  spawned PID %d  → %s", step, proc.pid, log_path)
-    last_size = 0
+
+    # open a second handle for tail-follow
+    reader = log_path.open("r")
+    reader.seek(0, os.SEEK_END)
+
+    start_time = time.time()
+    last_report = start_time
+
     while proc.poll() is None:
-        time.sleep(15)
-        size = log_path.stat().st_size if log_path.exists() else 0
-        if size != last_size:
-            last_size = size
-        else:
+        time.sleep(5)
+
+        # stream any new log content
+        new_data = reader.read()
+        if new_data:
+            sys.stdout.write(new_data)
+            sys.stdout.flush()
+
+        now = time.time()
+        if now - last_report >= 15:
             cpu = psutil.cpu_percent()
             ram = psutil.virtual_memory().percent
-            log.info("%s  –  still running…  CPU %.1f %%  RAM %.1f %%", step, cpu, ram)
+            disk = psutil.disk_usage("/").percent
+            elapsed = now - start_time
+            log.info(
+                "%s  –  running %.0fs  CPU %.1f %%  RAM %.1f %%  Disk %.1f %%",
+                step, elapsed, cpu, ram, disk
+            )
+            last_report = now
+
+    # flush any remaining log output
+    final_data = reader.read()
+    if final_data:
+        sys.stdout.write(final_data)
+        sys.stdout.flush()
+    reader.close()
+
     rc = proc.wait()
     if rc:
         try:
-            error_output = log_path.read_text()
-            sys.stderr.write(f"\n--- {step} STDERR ---\n{error_output}\n--- END STDERR ---\n")
+            err_text = log_path.read_text()
+            sys.stderr.write(f"\n--- {step} STDERR ---\n{err_text}\n--- END STDERR ---\n")
         except Exception:
-            log.error("Could not read log file %s for error output.", log_path)
+            log.error("Could not read %s for error output.", log_path)
     return rc
-
 
 def _build_env(base_py: str, script_dir: Path) -> dict[str, str]:
     """Return env dict for child scripts."""
