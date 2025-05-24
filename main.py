@@ -69,7 +69,14 @@ def _run_subprocess(cmd: list[str], env: dict[str, str], log_path: Path, step: s
             cpu = psutil.cpu_percent()
             ram = psutil.virtual_memory().percent
             log.info("%s  –  still running…  CPU %.1f %%  RAM %.1f %%", step, cpu, ram)
-    return proc.wait()
+    rc = proc.wait()
+    if rc:
+        try:
+            error_output = log_path.read_text()
+            sys.stderr.write(f"\n--- {step} STDERR ---\n{error_output}\n--- END STDERR ---\n")
+        except Exception:
+            log.error("Could not read log file %s for error output.", log_path)
+    return rc
 
 
 def _build_env(base_py: str, script_dir: Path) -> dict[str, str]:
