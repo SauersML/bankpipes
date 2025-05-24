@@ -300,9 +300,9 @@ def main():
     # Set a default number of partitions for Hail operations to improve GCS I/O and prevent too many small files.
     # This value scales with the available Spark cores to remain efficient on both small and large clusters.
     dynamic_partitions = max(200, hl.spark_context().defaultParallelism * 4)
-    # Set Hail's default partition count using an approach that works across Hail versions.
+    # Set Hail's default partition count in a way that is compatible across versions.
     try:
-        hl.utils.default_n_partitions(dynamic_partitions)
+        hl.default_n_partitions(dynamic_partitions)
     except AttributeError:
         if hasattr(hl, "set_default_n_partitions"):
             hl.set_default_n_partitions(dynamic_partitions)
