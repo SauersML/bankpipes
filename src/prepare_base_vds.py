@@ -440,12 +440,11 @@ def main():
             # This improves GCS I/O performance for the checkpoint and subsequent reads.
             # Retrieve the previously configured default partition count in a version-agnostic way.
             try:
-                target_vds_partitions = hl.utils.default_n_partitions()
+                target_vds_partitions = hl.default_n_partitions()
             except AttributeError:
-                if hasattr(hl, "default_n_partitions"):
-                    target_vds_partitions = hl.default_n_partitions()
-                else:
-                    target_vds_partitions = dynamic_partitions
+                if hasattr(hl, "set_default_n_partitions"):
+                    hl.set_default_n_partitions(dynamic_partitions)
+                target_vds_partitions = dynamic_partitions
             
             current_variant_partitions = base_cohort_vds.variant_data.n_partitions()
             current_reference_partitions = base_cohort_vds.reference_data.n_partitions()
