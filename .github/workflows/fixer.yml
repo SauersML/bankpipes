@@ -1,4 +1,4 @@
-name: Fix
+name: Fix Non-Breaking Spaces
 
 on:
   push:
@@ -20,28 +20,116 @@ jobs:
     - name: Check for non-breaking spaces and fix them
       id: fix-nbsp
       run: |
+        echo "=== DEBUG: Starting non-breaking space detection ==="
+        
         COMMIT_MSG="${{ github.event.head_commit.message }}"
+        echo "DEBUG: Commit message: $COMMIT_MSG"
+        
         if [[ "$COMMIT_MSG" == *"[bot] Auto-fix non-breaking spaces"* ]]; then
+          echo "DEBUG: Skipping - bot commit detected"
           echo "changes_made=false" >> $GITHUB_OUTPUT
           exit 0
         fi
         
+        echo "DEBUG: Proceeding with scan..."
         changes_made=false
         files_changed=""
-        temp_results=$(mktemp)
         
-        find . -type f -not -path "./.git/*" -not -path "./node_modules/*" -not -path "./.venv/*" -not -path "./venv/*" -not -path "./__pycache__/*" -not -path "*/.*cache*/*" -not -path "./build/*" -not -path "./dist/*" -not -path "./.next/*" -not -path "./target/*" -not -path "./.github/*" -not -name "*.png" -not -name "*.jpg" -not -name "*.jpeg" -not -name "*.gif" -not -name "*.pdf" -not -name "*.ico" -not -name "*.woff*" -not -name "*.ttf" -not -name "*.eot" -not -name "*.zip" -not -name "*.tar.gz" -not -name "*.exe" -not -name "*.dll" -not -name "*.so" -not -name "*.dylib" -not -name "*.bin" -not -name "*.class" -exec sh -c 'for file; do if file "$file" 2>/dev/null | grep -qi "binary\|executable\|archive"; then continue; fi; if hexdump -C "$file" 2>/dev/null | grep -q "c2 a0"; then cp "$file" "$file.backup"; sed -i "s/$(printf '\''\xc2\xa0'\'')/ /g" "$file" 2>/dev/null; if ! hexdump -C "$file" 2>/dev/null | grep -q "c2 a0"; then echo "$file" >> '"$temp_results"'; rm -f "$file.backup"; else mv "$file.backup" "$file"; fi; fi; done' sh {} +
+        echo "DEBUG: Finding files to scan..."
+        find . -type f \
+          -not -path "./.git/*" \
+          -not -path "./node_modules/*" \
+          -not -path "./.venv/*" \
+          -not -path "./venv/*" \
+          -not -path "./__pycache__/*" \
+          -not -path "*/.*cache*/*" \
+          -not -path "./build/*" \
+          -not -path "./dist/*" \
+          -not -path "./.next/*" \
+          -not -path "./target/*" \
+          -not -path "./.github/*" \
+          -not -name "*.png" \
+          -not -name "*.jpg" \
+          -not -name "*.jpeg" \
+          -not -name "*.gif" \
+          -not -name "*.pdf" \
+          -not -name "*.ico" \
+          -not -name "*.woff*" \
+          -not -name "*.ttf" \
+          -not -name "*.eot" \
+          -not -name "*.zip" \
+          -not -name "*.tar.gz" \
+          -not -name "*.exe" \
+          -not -name "*.dll" \
+          -not -name "*.so" \
+          -not -name "*.dylib" \
+          -not -name "*.bin" \
+          -not -name "*.class" > files_to_check.txt
         
-        if [ -s "$temp_results" ]; then
-          changes_made=true
-          files_changed=$(cat "$temp_results" | tr '\n' ' ' | sed 's/ $//')
+        echo "DEBUG: Found $(cat files_to_check.txt | wc -l) files to check"
+        echo "DEBUG: First 10 files:"
+        head -10 files_to_check.txt
+        
+        while IFS= read -r file; do
+          echo "DEBUG: Checking file: $file"
+          
+          if [ ! -f "$file" ]; then
+            echo "DEBUG: File does not exist: $file"
+            continue
+          fi
+          
+          file_type=$(file "$file" 2>/dev/null)
+          echo "DEBUG: File type: $file_type"
+          
+          if echo "$file_type" | grep -qi "binary\|executable\|archive"; then
+            echo "DEBUG: Skipping binary file: $file"
+            continue
+          fi
+          
+          echo "DEBUG: Checking for non-breaking spaces in: $file"
+          if hexdump -C "$file" 2>/dev/null | grep -q "c2 a0"; then
+            echo "DEBUG: Found non-breaking spaces in: $file"
+            echo "DEBUG: Hex dump sample:"
+            hexdump -C "$file" | grep "c2 a0" | head -3
+            
+            echo "DEBUG: Creating backup and fixing..."
+            cp "$file" "$file.backup"
+            
+            echo "DEBUG: Before fix - checking content:"
+            hexdump -C "$file" | grep "c2 a0" | wc -l
+            
+            sed -i 's/\xc2\xa0/ /g' "$file"
+            
+            echo "DEBUG: After fix - checking content:"
+            remaining=$(hexdump -C "$file" | grep "c2 a0" | wc -l || echo "0")
+            echo "DEBUG: Remaining non-breaking spaces: $remaining"
+            
+            if [ "$remaining" -eq 0 ]; then
+              echo "SUCCESS: Fixed non-breaking spaces in: $file"
+              files_changed="$files_changed $file"
+              changes_made=true
+              rm -f "$file.backup"
+            else
+              echo "FAILED: Could not fix all non-breaking spaces in: $file"
+              mv "$file.backup" "$file"
+            fi
+          else
+            echo "DEBUG: No non-breaking spaces found in: $file"
+          fi
+        done < files_to_check.txt
+        
+        rm -f files_to_check.txt
+        
+        echo "DEBUG: Final results:"
+        echo "DEBUG: changes_made=$changes_made"
+        echo "DEBUG: files_changed=$files_changed"
+        
+        if [ "$changes_made" = true ]; then
           echo "changes_made=true" >> $GITHUB_OUTPUT
           echo "files_changed=$files_changed" >> $GITHUB_OUTPUT
         else
           echo "changes_made=false" >> $GITHUB_OUTPUT
         fi
-        
-        rm -f "$temp_results"
 
     - name: Configure Git
       if: steps.fix-nbsp.outputs.changes_made == 'true'
@@ -53,7 +141,7 @@ jobs:
       if: steps.fix-nbsp.outputs.changes_made == 'true'
       run: |
         git add -A
-        git commit -m "[bot] Auto-fix non-breaking spaces - Files: ${{ steps.fix-nbsp.outputs.files_changed }} [skip ci]"
+        git commit -m "[bot] Auto-fix non-breaking spaces in:${{ steps.fix-nbsp.outputs.files_changed }} [skip ci]"
         git push
 
     - name: Create comment on PR
@@ -62,18 +150,17 @@ jobs:
       with:
         script: |
           const files = '${{ steps.fix-nbsp.outputs.files_changed }}';
-          const fileList = files.split(' ').filter(f => f.length > 0).map(f => `\`${f}\``).join(', ');
           github.rest.issues.createComment({
             issue_number: context.issue.number,
             owner: context.repo.owner,
             repo: context.repo.repo,
-            body: `🤖 Auto-fixed non-breaking spaces in: ${fileList}`
+            body: `🤖 Auto-fixed non-breaking spaces in: ${files}`
           });
 
     - name: Summary
       run: |
         if [ "${{ steps.fix-nbsp.outputs.changes_made }}" = "true" ]; then
-          echo "✅ Fixed files: ${{ steps.fix-nbsp.outputs.files_changed }}"
+          echo "✅ Fixed files:${{ steps.fix-nbsp.outputs.files_changed }}"
         else
           echo "✅ No non-breaking spaces found"
         fi
