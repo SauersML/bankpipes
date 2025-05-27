@@ -3,6 +3,11 @@ Overwrite existing and run:
 nohup bash -c '([ -d bankpipes ] && rm -rf bankpipes; git clone --depth 1 https://github.com/SauersML/bankpipes.git) && cd bankpipes && python3 main.py' 2>&1 | tee bankpipes_run.log &
 ```
 
+Stop a run:
+```
+pkill -f bankpipes
+```
+
 The following env vars are available:
 * SHELL
 * NV_LIBCUBLAS_VERSION
