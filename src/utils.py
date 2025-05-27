@@ -175,17 +175,30 @@ def init_hail(gcs_hail_temp_dir, log_suffix="task", spark_configurations_json_st
                 idempotent=True # Allows re-initialization with same parameters without error
             )
             print(f"Hail initialized successfully. Log file: ./{log_file_name}")
-            current_sc = hl.spark_context()
-            print(f"Spark context master: {current_sc.master if current_sc else 'Not available'}")
-            if current_sc:
-                 print(f"Spark application ID: {current_sc.applicationId}")
-                 print(f"Spark default parallelism: {current_sc.defaultParallelism}")
-            return
-        except Exception as e:
+            print(f"Hail effective cluster mode used for initialization: {cluster_mode}")
+            current_sc = hl.spark_context()
+            if current_sc:
+                print(f"Spark context master: {current_sc.master}")
+                print(f"Spark application ID: {current_sc.applicationId}")
+                print(f"Spark application name: {current_sc.appName}")
+                print(f"Spark default parallelism: {current_sc.defaultParallelism}")
+                try:
+                    num_executors = len(current_sc.statusTracker().getExecutorInfos())
+                    print(f"Spark num active executors (incl. driver if YARN client mode): {num_executors}")
+                except Exception as ex_info_err:
+                    print(f"Could not retrieve detailed executor count: {ex_info_err}")
+                try:
+                    if current_sc.uiWebUrl:
+                        print(f"Spark Web UI available at: {current_sc.uiWebUrl}")
+                except Exception:
+                    print("Spark Web UI URL not available through context.")
+            else:
+                print("Spark context not available after Hail initialization.")
+            return
+        except Exception as e:
             print(f"Hail initialization failed (Attempt {attempt + 1}/{_HAIL_INIT_ATTEMPTS}): {e}")
             if attempt < _HAIL_INIT_ATTEMPTS - 1:
                 print("Retrying Hail initialization...")
-                # hl.stop() is called at the beginning of the try block in next attempt
                 time.sleep(10 * (attempt + 1))
             else:
                 print("FATAL ERROR: Hail initialization failed after multiple attempts.")
