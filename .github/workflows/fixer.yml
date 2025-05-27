@@ -10,27 +10,30 @@ permissions:
 jobs:
   fix-non-breaking-spaces:
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
       with:
         token: ${{ secrets.GITHUB_TOKEN }}
-        fetch-depth: 0
+        fetch-depth: 0 # Fetch all history
 
     - name: Check for non-breaking spaces and fix them
       id: fix-nbsp
       run: |
         COMMIT_MSG="${{ github.event.head_commit.message }}"
-        
         if [[ "$COMMIT_MSG" == *"[bot] Auto-fix non-breaking spaces"* ]]; then
+          echo "Skipping: Last commit was an auto-fix by this action."
           echo "changes_made=false" >> $GITHUB_OUTPUT
+          echo "files_changed=" >> $GITHUB_OUTPUT
           exit 0
         fi
-        
+
         changes_made=false
-        files_changed=""
-        
+        fixed_files_list=""
+
+        # Find files, excluding common binary/build/VCS directories and specific extensions.
+        # This find command structure is from your original workflow.
         find . -type f \
           -not -path "./.git/*" \
           -not -path "./node_modules/*" \
@@ -60,55 +63,79 @@ jobs:
           -not -name "*.dylib" \
           -not -name "*.bin" \
           -not -name "*.class" > files_to_check.txt
-        
+
         while IFS= read -r file; do
           if [ ! -f "$file" ]; then
             continue
           fi
-          
-          file_type=$(file "$file" 2>/dev/null)
-          
-          if echo "$file_type" | grep -qi "text\|script\|JSON\|XML\|HTML\|CSS\|JavaScript\|Python\|shell\|yaml\|csv"; then
-            # Text file - proceed
-            :
-          elif echo "$file_type" | grep -qi "binary\|archive\|image\|audio\|video\|font\|executable.*binary"; then
-            continue
+
+          # Basic file type filtering (similar to your original workflow's logic).
+          # This checks if a file is likely text-based before attempting to fix NBSPs.
+          file_type_info=$(file "$file" 2>/dev/null)
+          process_this_file=false
+          if echo "$file_type_info" | grep -qiE "text|script|json|xml|html|css|javascript|python|shell|yaml|csv"; then
+            process_this_file=true
+          elif echo "$file_type_info" | grep -qiE "binary|archive|image|audio|video|font|executable.*binary"; then
+            process_this_file=false
           else
-            if head -c 1024 "$file" 2>/dev/null | grep -q '[[:cntrl:]]' && ! head -c 1024 "$file" 2>/dev/null | grep -q $'\t\|\n\|\r'; then
-              continue
+            # Fallback: if type is ambiguous, check for non-standard control characters.
+            # Allow tab, newline, carriage return. If other control chars present, skip.
+            if head -c 1024 "$file" 2>/dev/null | LC_ALL=C grep -q '[[:cntrl:]]' && \
+               ! head -c 1024 "$file" 2>/dev/null | LC_ALL=C grep -q $'[\t\n\r]'; then
+              process_this_file=false
+            else
+              process_this_file=true # Default to process if uncertain but no problematic control chars
             fi
           fi
+
+          if ! $process_this_file; then
+            echo "INFO: Skipping non-text or binary file: $file"
+            continue
+          fi
           
+          # Only proceed if non-breaking spaces (UTF-8: C2 A0) are detected.
           if hexdump -C "$file" 2>/dev/null | grep -q "c2 a0"; then
-            echo "Fixing non-breaking spaces in: $file"
-            
+            echo "INFO: Processing NBSPs in $file"
             cp "$file" "$file.backup"
-            
-            before_count=$(hexdump -C "$file" 2>/dev/null | grep -c "c2 a0" || echo "0")
-            
-            perl -i -pe 's/\x{00A0}/ /g' "$file" 2>/dev/null || sed -i 's/\xc2\xa0/ /g' "$file"
-            
-            after_count=$(hexdump -C "$file" 2>/dev/null | grep -c "c2 a0" || echo "0")
-            
-            if [ "$after_count" -eq 0 ]; then
-              echo "SUCCESS: Fixed $before_count non-breaking spaces in $file"
-              files_changed="$files_changed $file"
-              changes_made=true
-              rm -f "$file.backup"
-            else
-              echo "FAILED: Still $after_count non-breaking spaces in $file"
-              mv "$file.backup" "$file"
+
+            # Correctly count NBSPs before fixing. Removed "|| echo 0".
+            before_nbsp_count=$(hexdump -C "$file" 2>/dev/null | grep -c "c2 a0")
+
+            # Attempt to fix using perl (handles Unicode \x{00A0}), fallback to sed (handles UTF-8 bytes \xc2\xa0).
+            # Added -CS to perl for better UTF-8 input/output handling.
+            if ! perl -i -CS -pe 's/\x{00A0}/ /g' "$file" 2>/dev/null; then
+                sed -i 's/\xc2\xa0/ /g' "$file"
             fi
+
+            # Correctly count NBSPs after fixing. Removed "|| echo 0".
+            after_nbsp_count=$(hexdump -C "$file" 2>/dev/null | grep -c "c2 a0")
+
+            if [ "$after_nbsp_count" -eq 0 ]; then
+                if [ "$before_nbsp_count" -ne 0 ]; then # NBSPs were present and now are fixed
+                    echo "SUCCESS: Fixed $before_nbsp_count NBSPs in $file."
+                    fixed_files_list="$fixed_files_list $file"
+                    changes_made=true
+                else # File was already clean or fix didn't apply to NBSPs
+                    echo "INFO: $file is now clean (0 NBSPs after processing)."
+                fi
+                rm -f "$file.backup"
+            else
+                echo "FAILED: $file still has $after_nbsp_count NBSPs (was $before_nbsp_count). Reverted."
+                mv "$file.backup" "$file"
+            fi
+          else
+            echo "INFO: No NBSPs detected in $file (initial scan)."
           fi
         done < files_to_check.txt
-        
+
         rm -f files_to_check.txt
-        
+
         if [ "$changes_made" = true ]; then
           echo "changes_made=true" >> $GITHUB_OUTPUT
-          echo "files_changed=$files_changed" >> $GITHUB_OUTPUT
+          echo "files_changed=${fixed_files_list# }" >> $GITHUB_OUTPUT # Remove potential leading space
         else
           echo "changes_made=false" >> $GITHUB_OUTPUT
+          echo "files_changed=" >> $GITHUB_OUTPUT # Ensure it's empty if no changes
         fi
 
     - name: Configure Git
@@ -120,14 +147,28 @@ jobs:
     - name: Commit and push changes
       if: steps.fix-nbsp.outputs.changes_made == 'true'
       run: |
-        git add -A
-        git commit -m "[bot] Auto-fix non-breaking spaces in:${{ steps.fix-nbsp.outputs.files_changed }} [skip ci]"
-        git push
+        git add . # Add changes in the current directory and subdirectories
+        # Check if there are actual changes staged for commit to avoid empty commits
+        if ! git diff --staged --quiet; then
+          echo "Committing NBSP fixes for files: ${{ steps.fix-nbsp.outputs.files_changed }}"
+          git commit -m "[bot] Auto-fix non-breaking spaces in:${{ steps.fix-nbsp.outputs.files_changed }} [skip ci]"
+          git push
+        else
+          echo "INFO: No changes to commit after NBSP fixing attempt."
+        fi
 
     - name: Summary
+      if: always() # Always run to provide feedback
       run: |
         if [ "${{ steps.fix-nbsp.outputs.changes_made }}" = "true" ]; then
-          echo "✅ Fixed files:${{ steps.fix-nbsp.outputs.files_changed }}"
+          echo "✅ Non-breaking spaces were fixed in the following files:"
+          echo "${{ steps.fix-nbsp.outputs.files_changed }}"
         else
-          echo "✅ No non-breaking spaces found"
+          # Distinguish between skipped due to bot commit and genuinely no changes
+          if [[ "${{ github.event.head_commit.message }}" == *"[bot] Auto-fix non-breaking spaces"* && \
+                "${{ steps.fix-nbsp.outputs.changes_made }}" == "false" ]]; then
+            echo "✅ Skipped: Last commit was an auto-fix. No new non-breaking spaces processing was needed."
+          else
+            echo "✅ No non-breaking spaces were found or no files required changes."
+          fi
         fi
