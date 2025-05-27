@@ -165,6 +165,7 @@ def init_hail(gcs_hail_temp_dir, log_suffix="task", spark_configurations_json_st
         spark_master_arg_for_hl_init = None # Let spark_conf_dict['spark.master'] = 'yarn' control.
         spark_master_for_log_message = "yarn (via spark.master='yarn' in spark_conf)"
         print(f"Configuring Hail for Dataproc YARN mode. Setting 'spark.master' to 'yarn' in spark_conf.")
+        sys.stdout.flush()
     else:
         # Hail will use its default behavior for determining the Spark master.
         spark_master_for_log_message = f"undefined (unknown cluster_mode: {cluster_mode}; Hail will use default master detection)"
@@ -183,6 +184,7 @@ def init_hail(gcs_hail_temp_dir, log_suffix="task", spark_configurations_json_st
             print(f"Attempting Hail initialization (Attempt {attempt + 1}/{_HAIL_INIT_ATTEMPTS}). Log: ./{log_file_name}, Effective Spark Master Config: {spark_master_for_log_message}")
             # Clarify if spark_conf_dict is empty or populated.
             print(f"Passing Spark configurations to hl.init: {spark_conf_dict if spark_conf_dict else 'None (Hail defaults will apply if spark_conf is empty)'}")
+            sys.stdout.flush()
 
             hl.init(
                 tmp_dir=gcs_hail_temp_dir,
@@ -194,6 +196,7 @@ def init_hail(gcs_hail_temp_dir, log_suffix="task", spark_configurations_json_st
             )
             print(f"Hail initialized successfully. Log file: ./{log_file_name}")
             print(f"Hail initialization was attempted with the 'cluster_mode' parameter set to: '{cluster_mode}'")
+            sys.stdout.flush()
 
             current_sc = hl.spark_context()
             if current_sc:
@@ -211,14 +214,19 @@ def init_hail(gcs_hail_temp_dir, log_suffix="task", spark_configurations_json_st
                     if actual_master == "yarn":
                         print(f"SUCCESS: Intended 'dataproc_yarn' mode, and actual Spark master is '{actual_master}'. Worker nodes should be utilized via YARN.")
                     else:
-                        print(f"Intended 'dataproc_yarn' mode, but actual Spark master is '{actual_master}' (expected 'yarn').")
+                        print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+                        print(f"CRITICAL WARNING: Intended 'dataproc_yarn' mode, but actual Spark master is '{actual_master}' (expected 'yarn').")
+                        print("Dataproc worker nodes will LIKELY NOT BE USED. The job may run only on the master node.")
                         print(f"Spark configurations passed to hl.init (spark_conf): {spark_conf_dict}")
                         print(f"Master argument passed to hl.init (master): {spark_master_arg_for_hl_init}")
+                        print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+                        sys.stdout.flush() # Ensure this critical warning is written immediately
                 elif cluster_mode == "local":
                     if actual_master and actual_master.startswith("local"): # Check if actual_master is not None or empty
                         print(f"Intended 'local' mode, and actual Spark master is '{actual_master}'.")
                     else:
-                        print(f"Intended 'local' mode, but actual Spark master is '{actual_master}'.")
+                        print(f"WARNING: Intended 'local' mode, but actual Spark master is '{actual_master}'. Behavior might be unexpected.") # Changed print for local mode mismatch
+                        sys.stdout.flush() # Ensure this print is written immediately
                 
                 # Log other available Spark context details for debugging and information.
                 try:
@@ -242,11 +250,13 @@ def init_hail(gcs_hail_temp_dir, log_suffix="task", spark_configurations_json_st
                         print("Spark Web UI URL not directly available from SparkContext object attributes (may require SparkSession).")
                 except Exception as sc_detail_err:
                     print(f"WARNING: Error retrieving some secondary Spark context details (ID, name, parallelism, UI): {sc_detail_err}")
+                    sys.stdout.flush()
             else:
                 # This indicates a fundamental failure in Spark startup or Hail's connection to it.
                 print("CRITICAL FAILURE: Spark context (hl.spark_context()) is None after Hail initialization attempt.")
                 print("This means Spark did not start correctly, or Hail could not establish a connection.")
                 print("All subsequent Hail operations will fail. Check Hail and Spark logs for detailed errors.")
+                sys.stdout.flush()
             return # Return from init_hail after successful attempt or if current_sc is None (which is a failure state).
         except Exception as e:
             print(f"Hail initialization failed (Attempt {attempt + 1}/{_HAIL_INIT_ATTEMPTS}): {e}")
