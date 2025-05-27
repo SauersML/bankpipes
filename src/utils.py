@@ -160,6 +160,30 @@ def init_hail(gcs_hail_temp_dir, log_suffix="task", spark_configurations_json_st
         print(f"INFO: Removing 'spark.master' from spark_conf_dict. Current value: {spark_conf_dict.pop('spark.master')}")
         sys.stdout.flush()
 
+    # NOTE: The Spark configurations 'spark.hadoop.fs.gs.block.size' and
+    # 'spark.executor.defaultJavaOptions' have been explicitly removed if present.
+    # Interactive notebook testing showed that passing these specific parameters
+    # (as they were configured in the input JSON for this environment)
+    # caused hl.init() to fail immediately with an IllegalArgumentException.
+    # Do not add these or other Spark parameters back to the spark_conf passed
+    # to hl.init() unless they are clearly documented by Hail for the target
+    # version or have been thoroughly tested in this specific Dataproc environment
+    # to not cause such initialization failures. It's safer to rely on Hail's
+    # defaults or environment-provided Spark configurations when possible.
+    problematic_keys = [
+        'spark.hadoop.fs.gs.block.size',
+        'spark.executor.defaultJavaOptions'
+    ]
+    removed_keys = []
+    for key_to_remove in problematic_keys:
+        if key_to_remove in spark_conf_dict:
+            del spark_conf_dict[key_to_remove]
+            removed_keys.append(key_to_remove)
+    
+    if removed_keys:
+        print(f"INFO: Removed the following problematic Spark configurations before calling hl.init(): {', '.join(removed_keys)}. These were found to cause 'IllegalArgumentException'.")
+        sys.stdout.flush()
+
     if cluster_mode == "local":
         print("Configuring Hail for local Spark mode. 'spark.master' should be set by Spark environment or defaults (e.g. local[*]).")
         sys.stdout.flush()
