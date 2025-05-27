@@ -141,10 +141,7 @@ class Config:
             "spark.hadoop.fs.gs.requester.pays.mode=AUTO",
             f"spark.hadoop.fs.gs.requester.pays.project.id={self.env['GOOGLE_PROJECT']}",
             f"spark.hadoop.fs.gs.project.id={self.env['GOOGLE_PROJECT']}",
-            "spark.hadoop.fs.gs.block.size=134217728",
             # leave dynamicAllocation unset (not supported) → cluster alloc determines resources
-            "spark.serializer=org.apache.spark.serializer.KryoSerializer",
-            "spark.executor.defaultJavaOptions=-XX:+UseG1GC -XX:InitiatingHeapOccupancyPercent=35"
         ]
         extra = os.getenv("EXTRA_SPARK_CONF")
         if extra:
