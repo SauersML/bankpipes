@@ -205,11 +205,11 @@ def main(cfg: Config) -> None:
         "--n_controls_downsample", str(VDS_PREP_N_CONTROLS_DOWNSAMPLE),
         "--downsampling_random_state", str(VDS_PREP_DOWNSAMPLING_RANDOM_STATE),
         "--google_billing_project", cfg.env["GOOGLE_PROJECT"],
-        "--spark_configurations_json", cfg.spark_conf_json,
-        # Instruct Hail to run on the Dataproc YARN cluster
-        "--hail_cluster_mode", "dataproc_yarn"
-    ]
-    if VDS_PREP_ENABLE_DOWNSAMPLING:
+        "--spark_configurations_json", cfg.spark_conf_json,
+        # Instruct Hail to run on the Dataproc YARN cluster
+        "--hail_cluster_mode", "dataproc_yarn"
+    ]
+    if VDS_PREP_ENABLE_DOWNSAMPLING:
 
     rc = _run_subprocess(prep_args, env, log_dir/"02_prepare_vds.log", "prepare_base_vds")
     if rc:
@@ -247,12 +247,12 @@ def main(cfg: Config) -> None:
                 "--run_timestamp", cfg.ts,
                 "--output_final_hail_table_gcs_path", ht_gcs,
                 "--output_final_score_csv_gcs_path", csv_gcs,
-                "--google_billing_project", cfg.env["GOOGLE_PROJECT"],
-                "--spark_configurations_json", cfg.spark_conf_json,
-                # Instruct Hail to run on the Dataproc YARN cluster
-                "--hail_cluster_mode", "dataproc_yarn"
-            ],
-            env, logs["proc"], f"{m_id}:process"
+                "--google_billing_project", cfg.env["GOOGLE_PROJECT"],
+                "--spark_configurations_json", cfg.spark_conf_json,
+                # Instruct Hail to run on the Dataproc YARN cluster
+                "--hail_cluster_mode", "dataproc_yarn"
+            ],
+            env, logs["proc"], f"{m_id}:process"
         )
         if rc1:
             log.error("%s failed (processing)", m_id)
