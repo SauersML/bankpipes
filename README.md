@@ -6,7 +6,6 @@ nohup bash -c '([ -d bankpipes ] && rm -rf bankpipes; git clone --depth 1 https:
 Run locally:
 ```
 nohup bash -c '([ -d bankpipes ] && rm -rf bankpipes; git clone --depth 1 https://github.com/SauersML/bankpipes.git) && cd bankpipes && python3 main.py --hail_execution_mode local' 2>&1 | tee bankpipes_run.log &
-
 ```
 
 
