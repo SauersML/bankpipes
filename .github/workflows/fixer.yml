@@ -1,0 +1,149 @@
+name: Fix
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master, develop ]
+
+jobs:
+  fix-non-breaking-spaces:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        fetch-depth: 0
+
+    - name: Check for non-breaking spaces and fix them
+      id: fix-nbsp
+      run: |
+        # Skip if this is already a bot commit to avoid infinite loops
+        if [[ "${{ github.event.head_commit.message }}" == *"[bot] Fix non-breaking spaces"* ]]; then
+          echo "Skipping: This is already a bot commit"
+          echo "changes_made=false" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+        
+        # Find all text files (excluding binary files, .git, node_modules, etc.)
+        echo "Scanning for non-breaking spaces..."
+        
+        # Create a list of files to check (excluding common binary/generated directories)
+        find . -type f \
+          -not -path "./.git/*" \
+          -not -path "./node_modules/*" \
+          -not -path "./.venv/*" \
+          -not -path "./venv/*" \
+          -not -path "./__pycache__/*" \
+          -not -path "*/.*cache*/*" \
+          -not -path "./build/*" \
+          -not -path "./dist/*" \
+          -not -path "./.next/*" \
+          -not -path "./target/*" \
+          -not -name "*.png" \
+          -not -name "*.jpg" \
+          -not -name "*.jpeg" \
+          -not -name "*.gif" \
+          -not -name "*.pdf" \
+          -not -name "*.ico" \
+          -not -name "*.woff*" \
+          -not -name "*.ttf" \
+          -not -name "*.eot" \
+          -not -name "*.zip" \
+          -not -name "*.tar.gz" \
+          -not -name "*.exe" \
+          -not -name "*.dll" \
+          -not -name "*.so" \
+          -not -name "*.dylib" > files_to_check.txt
+        
+        changes_made=false
+        files_changed=()
+        
+        # Check each file for non-breaking spaces (U+00A0)
+        while IFS= read -r file; do
+          if [ -f "$file" ]; then
+            # Check if file contains non-breaking spaces
+            if grep -l $'\u00A0' "$file" >/dev/null 2>&1; then
+              echo "Found non-breaking spaces in: $file"
+              
+              # Create backup and fix the file
+              cp "$file" "$file.backup"
+              
+              # Replace non-breaking spaces with regular spaces
+              # Using multiple methods to catch different encodings
+              sed -i 's/\u00A0/ /g' "$file" 2>/dev/null || true
+              sed -i 's/\xC2\xA0/ /g' "$file" 2>/dev/null || true
+              
+              # Also use tr as fallback
+              tr '\u00A0' ' ' < "$file.backup" > "$file.tmp" && mv "$file.tmp" "$file"
+              
+              # Verify the fix worked
+              if ! grep -l $'\u00A0' "$file" >/dev/null 2>&1; then
+                echo "✅ Fixed non-breaking spaces in: $file"
+                files_changed+=("$file")
+                changes_made=true
+                rm "$file.backup"
+              else
+                echo "❌ Failed to fix: $file (restoring backup)"
+                mv "$file.backup" "$file"
+              fi
+            fi
+          fi
+        done < files_to_check.txt
+        
+        rm -f files_to_check.txt
+        
+        if [ "$changes_made" = true ]; then
+          echo "Files with fixes: ${files_changed[*]}"
+          echo "changes_made=true" >> $GITHUB_OUTPUT
+          echo "files_changed=${files_changed[*]}" >> $GITHUB_OUTPUT
+        else
+          echo "No non-breaking spaces found"
+          echo "changes_made=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Configure Git
+      if: steps.fix-nbsp.outputs.changes_made == 'true'
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action Bot"
+
+    - name: Commit and push changes
+      if: steps.fix-nbsp.outputs.changes_made == 'true'
+      run: |
+        git add -A
+        git commit -m "[bot] Fix non-breaking spaces in code files
+        
+        - Automatically replaced non-breaking spaces (U+00A0) with regular spaces
+        - Files affected: ${{ steps.fix-nbsp.outputs.files_changed }}
+        - This prevents Python SyntaxError and other parsing issues
+        
+        Skip-CI: true"
+        
+        # Push the changes
+        git push
+
+    - name: Create comment on PR (if applicable)
+      if: steps.fix-nbsp.outputs.changes_made == 'true' && github.event_name == 'pull_request'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: '🤖 **Auto-fix Applied**: Non-breaking spaces were detected and automatically replaced with regular spaces in the following files:\n\n' +
+                  '${{ steps.fix-nbsp.outputs.files_changed }}'.split(' ').map(f => `- \`${f}\``).join('\n') +
+                  '\n\nThis prevents syntax errors and parsing issues. The changes have been committed automatically.'
+          })
+
+    - name: Summary
+      run: |
+        if [ "${{ steps.fix-nbsp.outputs.changes_made }}" = "true" ]; then
+          echo "✅ Non-breaking spaces were found and fixed automatically"
+          echo "📝 Files updated: ${{ steps.fix-nbsp.outputs.files_changed }}"
+        else
+          echo "✅ No non-breaking spaces detected in the repository"
+        fi
