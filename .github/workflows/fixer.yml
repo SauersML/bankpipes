@@ -21,6 +21,8 @@ jobs:
     - name: Check for non-breaking spaces and fix them
       id: fix-nbsp
       run: |
+        set -ex # Enable verbose output and exit on error for better debugging
+        
         COMMIT_MSG="${{ github.event.head_commit.message }}"
         if [[ "$COMMIT_MSG" == *"[bot] Auto-fix non-breaking spaces"* ]]; then
           echo "Skipping: Last commit was an auto-fix by this action."
@@ -33,7 +35,6 @@ jobs:
         fixed_files_list=""
 
         # Find files, excluding common binary/build/VCS directories and specific extensions.
-        # This find command structure is from your original workflow.
         find . -type f \
           -not -path "./.git/*" \
           -not -path "./node_modules/*" \
@@ -69,8 +70,6 @@ jobs:
             continue
           fi
 
-          # Basic file type filtering (similar to your original workflow's logic).
-          # This checks if a file is likely text-based before attempting to fix NBSPs.
           file_type_info=$(file "$file" 2>/dev/null)
           process_this_file=false
           if echo "$file_type_info" | grep -qiE "text|script|json|xml|html|css|javascript|python|shell|yaml|csv"; then
@@ -78,13 +77,11 @@ jobs:
           elif echo "$file_type_info" | grep -qiE "binary|archive|image|audio|video|font|executable.*binary"; then
             process_this_file=false
           else
-            # Fallback: if type is ambiguous, check for non-standard control characters.
-            # Allow tab, newline, carriage return. If other control chars present, skip.
             if head -c 1024 "$file" 2>/dev/null | LC_ALL=C grep -q '[[:cntrl:]]' && \
                ! head -c 1024 "$file" 2>/dev/null | LC_ALL=C grep -q $'[\t\n\r]'; then
               process_this_file=false
             else
-              process_this_file=true # Default to process if uncertain but no problematic control chars
+              process_this_file=true
             fi
           fi
 
@@ -93,35 +90,31 @@ jobs:
             continue
           fi
           
-          # Only proceed if non-breaking spaces (UTF-8: C2 A0) are detected.
           if hexdump -C "$file" 2>/dev/null | grep -q "c2 a0"; then
-            echo "INFO: Processing NBSPs in $file"
+            echo "INFO: Processing NBSPs in $file" # This line was seen in your logs
+            # Subsequent commands are suspects for the exit code 1
             cp "$file" "$file.backup"
 
-            # Correctly count NBSPs before fixing. Removed "|| echo 0".
             before_nbsp_count=$(hexdump -C "$file" 2>/dev/null | grep -c "c2 a0")
 
-            # Attempt to fix using perl (handles Unicode \x{00A0}), fallback to sed (handles UTF-8 bytes \xc2\xa0).
-            # Added -CS to perl for better UTF-8 input/output handling.
             if ! perl -i -CS -pe 's/\x{00A0}/ /g' "$file" 2>/dev/null; then
                 sed -i 's/\xc2\xa0/ /g' "$file"
             fi
 
-            # Correctly count NBSPs after fixing. Removed "|| echo 0".
             after_nbsp_count=$(hexdump -C "$file" 2>/dev/null | grep -c "c2 a0")
 
             if [ "$after_nbsp_count" -eq 0 ]; then
-                if [ "$before_nbsp_count" -ne 0 ]; then # NBSPs were present and now are fixed
+                if [ "$before_nbsp_count" -ne 0 ]; then
                     echo "SUCCESS: Fixed $before_nbsp_count NBSPs in $file."
                     fixed_files_list="$fixed_files_list $file"
                     changes_made=true
-                else # File was already clean or fix didn't apply to NBSPs
+                else
                     echo "INFO: $file is now clean (0 NBSPs after processing)."
                 fi
                 rm -f "$file.backup"
             else
-                echo "FAILED: $file still has $after_nbsp_count NBSPs (was $before_nbsp_count). Reverted."
-                mv "$file.backup" "$file"
+                echo "FAILED: $file still has $after_nbsp_count NBSPs (was $before_nbsp_count). Reverting."
+                mv "$file.backup" "$file" # This mv is a potential failure point if fix failed
             fi
           else
             echo "INFO: No NBSPs detected in $file (initial scan)."
@@ -132,23 +125,24 @@ jobs:
 
         if [ "$changes_made" = true ]; then
           echo "changes_made=true" >> $GITHUB_OUTPUT
-          echo "files_changed=${fixed_files_list# }" >> $GITHUB_OUTPUT # Remove potential leading space
+          echo "files_changed=${fixed_files_list# }" >> $GITHUB_OUTPUT
         else
           echo "changes_made=false" >> $GITHUB_OUTPUT
-          echo "files_changed=" >> $GITHUB_OUTPUT # Ensure it's empty if no changes
+          echo "files_changed=" >> $GITHUB_OUTPUT
         fi
 
     - name: Configure Git
       if: steps.fix-nbsp.outputs.changes_made == 'true'
       run: |
+        set -ex # Also useful here
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action Bot"
 
     - name: Commit and push changes
       if: steps.fix-nbsp.outputs.changes_made == 'true'
       run: |
-        git add . # Add changes in the current directory and subdirectories
-        # Check if there are actual changes staged for commit to avoid empty commits
+        set -ex # And here
+        git add .
         if ! git diff --staged --quiet; then
           echo "Committing NBSP fixes for files: ${{ steps.fix-nbsp.outputs.files_changed }}"
           git commit -m "[bot] Auto-fix non-breaking spaces in:${{ steps.fix-nbsp.outputs.files_changed }} [skip ci]"
@@ -158,13 +152,13 @@ jobs:
         fi
 
     - name: Summary
-      if: always() # Always run to provide feedback
+      if: always()
       run: |
+        # set -ex is not usually needed for simple echo commands in summary
         if [ "${{ steps.fix-nbsp.outputs.changes_made }}" = "true" ]; then
           echo "✅ Non-breaking spaces were fixed in the following files:"
           echo "${{ steps.fix-nbsp.outputs.files_changed }}"
         else
-          # Distinguish between skipped due to bot commit and genuinely no changes
           if [[ "${{ github.event.head_commit.message }}" == *"[bot] Auto-fix non-breaking spaces"* && \
                 "${{ steps.fix-nbsp.outputs.changes_made }}" == "false" ]]; then
             echo "✅ Skipped: Last commit was an auto-fix. No new non-breaking spaces processing was needed."
