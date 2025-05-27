@@ -116,7 +116,7 @@ def _build_env(base_py: str, script_dir: Path) -> dict[str, str]:
 #  CONFIG CLASS
 # ────────────────────────────────────────────────────────────────────────────────
 class Config:
-    def __init__(self, yaml_path: Path):
+    def __init__(self, yaml_path: Path, hail_execution_mode: str):
         self.cfg = yaml.safe_load(Path(yaml_path).read_text())
         pheno = self.cfg.get("phenotype_definition") or {}
         self.pheno_name: str = pheno.get("target_name") or sys.exit("target_name missing")
@@ -136,6 +136,7 @@ class Config:
         self.gcs_intermediate = f"gs://{self.bucket}/{GCS_REUSABLE_INTERMEDIATES_SUFFIX}"
         self.gcs_hail_tmp = f"gs://{self.bucket}/{GCS_HAIL_TEMP_RUN_SPECIFIC_SUFFIX}/{ts}"
         self.gcs_outputs = f"gs://{self.bucket}/{GCS_RUN_OUTPUTS_SUFFIX}/{ts}"
+        self.hail_execution_mode = hail_execution_mode
         # Models CSV
         self.models_csv = self.script_dir / MODELS_CSV_FILENAME
         if not self.models_csv.exists():
@@ -189,7 +190,7 @@ def main(cfg: Config) -> None:
         "--downsampling_random_state", str(VDS_PREP_DOWNSAMPLING_RANDOM_STATE),
         "--google_billing_project", cfg.env["GOOGLE_PROJECT"],
         # Instruct Hail to run on the Dataproc YARN cluster
-        "--hail_cluster_mode", "dataproc_yarn"
+        "--hail_cluster_mode", cfg.hail_execution_mode
     ]
     if VDS_PREP_ENABLE_DOWNSAMPLING:
         prep_args.append("--enable_downsampling_for_vds")
@@ -232,7 +233,7 @@ def main(cfg: Config) -> None:
                 "--output_final_score_csv_gcs_path", csv_gcs,
                 "--google_billing_project", cfg.env["GOOGLE_PROJECT"],
                 # Instruct Hail to run on the Dataproc YARN cluster
-                "--hail_cluster_mode", "dataproc_yarn"
+                "--hail_cluster_mode", cfg.hail_execution_mode
             ],
             env, logs["proc"], f"{m_id}:process"
         )
@@ -298,6 +299,12 @@ def main(cfg: Config) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="AoU PRS orchestrator")
     parser.add_argument("--config", default="config.yaml", help="Path to YAML config")
+    parser.add_argument(
+        "--hail_execution_mode",
+        default="dataproc_yarn",
+        choices=["dataproc_yarn", "local"],
+        help="Specify the Hail cluster mode ('dataproc_yarn' for YARN cluster, 'local' for local Spark on master node)."
+    )
     args = parser.parse_args()
-    cfg = Config(args.config)
+    cfg = Config(args.config, hail_execution_mode=args.hail_execution_mode)
     main(cfg)
