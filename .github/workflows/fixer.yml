@@ -21,7 +21,7 @@ jobs:
     - name: Check for non-breaking spaces and fix them
       id: fix-nbsp
       run: |
-        set -ex # Enable verbose output and exit on error for better debugging
+        set -ex # Keep for robust error checking and verbose output
         
         COMMIT_MSG="${{ github.event.head_commit.message }}"
         if [[ "$COMMIT_MSG" == *"[bot] Auto-fix non-breaking spaces"* ]]; then
@@ -34,7 +34,6 @@ jobs:
         changes_made=false
         fixed_files_list=""
 
-        # Find files, excluding common binary/build/VCS directories and specific extensions.
         find . -type f \
           -not -path "./.git/*" \
           -not -path "./node_modules/*" \
@@ -91,17 +90,18 @@ jobs:
           fi
           
           if hexdump -C "$file" 2>/dev/null | grep -q "c2 a0"; then
-            echo "INFO: Processing NBSPs in $file" # This line was seen in your logs
-            # Subsequent commands are suspects for the exit code 1
+            echo "INFO: Processing NBSPs in $file"
             cp "$file" "$file.backup"
 
-            before_nbsp_count=$(hexdump -C "$file" 2>/dev/null | grep -c "c2 a0")
+            # Corrected: Added "|| true" to ensure command substitution exits 0 with set -e
+            before_nbsp_count=$(hexdump -C "$file" 2>/dev/null | grep -c "c2 a0" || true)
 
             if ! perl -i -CS -pe 's/\x{00A0}/ /g' "$file" 2>/dev/null; then
                 sed -i 's/\xc2\xa0/ /g' "$file"
             fi
 
-            after_nbsp_count=$(hexdump -C "$file" 2>/dev/null | grep -c "c2 a0")
+            # Corrected: Added "|| true" to ensure command substitution exits 0 with set -e
+            after_nbsp_count=$(hexdump -C "$file" 2>/dev/null | grep -c "c2 a0" || true)
 
             if [ "$after_nbsp_count" -eq 0 ]; then
                 if [ "$before_nbsp_count" -ne 0 ]; then
@@ -113,8 +113,8 @@ jobs:
                 fi
                 rm -f "$file.backup"
             else
-                echo "FAILED: $file still has $after_nbsp_count NBSPs (was $before_nbsp_count). Reverting."
-                mv "$file.backup" "$file" # This mv is a potential failure point if fix failed
+                echo "FAILED: $file still has $after_nbsp_count NBSPs (was $before_nbsp_count). Reverted."
+                mv "$file.backup" "$file"
             fi
           else
             echo "INFO: No NBSPs detected in $file (initial scan)."
@@ -134,14 +134,14 @@ jobs:
     - name: Configure Git
       if: steps.fix-nbsp.outputs.changes_made == 'true'
       run: |
-        set -ex # Also useful here
+        set -ex
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action Bot"
 
     - name: Commit and push changes
       if: steps.fix-nbsp.outputs.changes_made == 'true'
       run: |
-        set -ex # And here
+        set -ex
         git add .
         if ! git diff --staged --quiet; then
           echo "Committing NBSP fixes for files: ${{ steps.fix-nbsp.outputs.files_changed }}"
@@ -154,7 +154,6 @@ jobs:
     - name: Summary
       if: always()
       run: |
-        # set -ex is not usually needed for simple echo commands in summary
         if [ "${{ steps.fix-nbsp.outputs.changes_made }}" = "true" ]; then
           echo "✅ Non-breaking spaces were fixed in the following files:"
           echo "${{ steps.fix-nbsp.outputs.files_changed }}"
