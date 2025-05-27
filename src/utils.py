@@ -196,11 +196,31 @@ def init_hail(gcs_hail_temp_dir, log_suffix="task", spark_configurations_json_st
 
     for attempt in range(_HAIL_INIT_ATTEMPTS):
         try:
-            if hl.utils.java.Env.backend() is not None:
-                print("Stopping existing Hail session before initializing a new one...")
+            print(f"Attempt {attempt + 1}/{_HAIL_INIT_ATTEMPTS}: Checking initial Hail backend state...")
+            sys.stdout.flush()
+            try:
+                current_backend_status = str(hl.current_backend()) # Call it once
+                print(f"Attempt {attempt + 1}: Initial hl.current_backend() reports: {current_backend_status}")
+                sys.stdout.flush()
+            except Exception as e_current_backend:
+                # This might happen if Spark isn't even on the path or basic setup is missing
+                print(f"Attempt {attempt + 1}: Error when calling hl.current_backend(): {e_current_backend}")
+                sys.stdout.flush()
+                current_backend_status = "Error or None" # Ensure it's a string for the next check
+            
+            # if hl.utils.java.Env.backend() is not None: # OLD
+            if current_backend_status != "None" and "SparkBackend" in current_backend_status: # NEW condition, more robustly checks if it's an actual backend
+                print(f"Attempt {attempt + 1}: An existing Hail session (SparkBackend) was found. Stopping it before initializing a new one...")
                 sys.stdout.flush()
                 hl.stop()
-                time.sleep(5) 
+                # time.sleep(5) # REMOVE this line
+            elif current_backend_status != "None" and "SparkBackend" not in current_backend_status :
+                 print(f"Attempt {attempt + 1}: An existing Hail session was found but it is NOT SparkBackend ({current_backend_status}). Stopping it before initializing a new one...")
+                 sys.stdout.flush()
+                 hl.stop()
+            else:
+                print(f"Attempt {attempt + 1}: No existing Hail SparkBackend session found, proceeding with initialization.")
+                sys.stdout.flush()
 
             timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
             log_file_name = f'hail_{timestamp}_{log_suffix}_{os.getpid()}.log'
