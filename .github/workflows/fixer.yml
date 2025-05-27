@@ -1,4 +1,4 @@
-name: Fix Non-Breaking Spaces
+name: Fix
 
 on:
   push:
@@ -81,9 +81,20 @@ jobs:
           file_type=$(file "$file" 2>/dev/null)
           echo "DEBUG: File type: $file_type"
           
-          if echo "$file_type" | grep -qi "binary\|executable\|archive"; then
+          # Improved binary detection - exclude common text file types first
+          if echo "$file_type" | grep -qi "text\|script\|JSON\|XML\|HTML\|CSS\|JavaScript\|Python\|shell\|yaml\|csv"; then
+            echo "DEBUG: Identified as text file: $file"
+          elif echo "$file_type" | grep -qi "binary\|archive\|image\|audio\|video\|font\|executable.*binary"; then
             echo "DEBUG: Skipping binary file: $file"
             continue
+          else
+            # For ambiguous cases, try to read the first few bytes to check if it's text
+            if head -c 1024 "$file" 2>/dev/null | grep -q '[[:cntrl:]]' && ! head -c 1024 "$file" 2>/dev/null | grep -q $'\t\|\n\|\r'; then
+              echo "DEBUG: Detected as binary based on content: $file"
+              continue
+            else
+              echo "DEBUG: Treating as text file: $file"
+            fi
           fi
           
           echo "DEBUG: Checking for non-breaking spaces in: $file"
@@ -98,7 +109,8 @@ jobs:
             echo "DEBUG: Before fix - checking content:"
             hexdump -C "$file" | grep "c2 a0" | wc -l
             
-            sed -i 's/\xc2\xa0/ /g' "$file"
+            # Use perl for more reliable UTF-8 handling
+            perl -i -pe 's/\x{00A0}/ /g' "$file" 2>/dev/null || sed -i 's/\xc2\xa0/ /g' "$file"
             
             echo "DEBUG: After fix - checking content:"
             remaining=$(hexdump -C "$file" | grep "c2 a0" | wc -l || echo "0")
