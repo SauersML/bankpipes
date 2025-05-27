@@ -18,7 +18,6 @@ def parse_args():
     parser.add_argument("--run_timestamp", required=True, help="Run timestamp (YYYYMMDD_HHMMSS) for Hail logging.")
     parser.add_argument("--gcs_temp_dir", required=True, help="GCS base directory for stable intermediate checkpoints (VDS, ID lists).")
     parser.add_argument("--gcs_hail_temp_dir", required=True, help="GCS temporary directory specifically for Hail shuffle/intermediate operations.")
-    parser.add_argument("--spark_configurations_json", required=True, help="JSON string of Spark configurations for Hail initialization.")
     parser.add_argument("--wgs_vds_path", required=True, help="GCS path to the full input WGS VDS.")
     parser.add_argument("--flagged_samples_gcs_path", required=True, help="GCS path to the TSV file containing flagged sample IDs.")
     parser.add_argument("--base_cohort_vds_path_out", required=True, help="GCS output path for the prepared base cohort VDS checkpoint.")
@@ -299,7 +298,6 @@ def main():
     init_hail(
         gcs_hail_temp_dir=args.gcs_hail_temp_dir,
         log_suffix=args.run_timestamp, # Using run_timestamp as the log suffix for this script
-        spark_configurations_json_str=args.spark_configurations_json,
         cluster_mode=args.hail_cluster_mode # Pass the cluster mode to Hail initialization
     )
     # Set a default number of partitions for Hail operations to improve GCS I/O and prevent too many small files.

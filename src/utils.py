@@ -114,75 +114,23 @@ def delete_gcs_path(gcs_path, project_id_for_billing=None, recursive=True):
 
 # --- Hail Interaction ---
 
-def init_hail(gcs_hail_temp_dir, log_suffix="task", spark_configurations_json_str=None, cluster_mode="local"):
+def init_hail(gcs_hail_temp_dir, log_suffix="task", cluster_mode="local"):
     """
     Initializes Hail.
     
     Args:
         gcs_hail_temp_dir (str): GCS path for Hail's temporary directory.
         log_suffix (str): Suffix for the Hail log file name.
-        spark_configurations_json_str (str, optional): JSON string of Spark configurations.
         cluster_mode (str): Execution mode. "local" for local Spark, "dataproc_yarn" for Dataproc.
     """
-    print(f"Configuring Hail environment for cluster_mode: {cluster_mode}")
+    print(f"Configuring Hail environment for cluster_mode: {cluster_mode}. Spark configurations will be sourced from the environment (e.g., Dataproc properties, spark-defaults.conf).")
     if not gcs_hail_temp_dir or not gcs_hail_temp_dir.startswith("gs://"):
         print(f"FATAL ERROR: Invalid GCS path for Hail temp directory: {gcs_hail_temp_dir}")
         sys.exit(1)
 
-    spark_conf_dict = {}
-    if spark_configurations_json_str:
-        try:
-            config_list_of_strings = json.loads(spark_configurations_json_str)
-            for conf_item_str in config_list_of_strings:
-                if '=' in conf_item_str:
-                    key, value = conf_item_str.split('=', 1)
-                    spark_conf_dict[key.strip()] = value.strip()
-                else:
-                    print(f"[WARN] Hail Init: Skipping malformed Spark configuration string: {conf_item_str}")
-            if not spark_conf_dict:
-                 print("[INFO] Hail Init: No valid Spark configurations found in provided JSON string.")
-        except json.JSONDecodeError as e:
-            print(f"[WARN] Hail Init: Could not parse spark_configurations_json_str: {e}. Proceeding without these extra Spark confs.")
-            spark_conf_dict = {} # Default to empty if parsing fails
-    
-    # spark_conf_dict is an empty dict if parsing failed or no string was provided
-    if not isinstance(spark_conf_dict, dict):
-        spark_conf_dict = {}
-
-    # Configure Spark master settings based on cluster_mode.
-    # The 'master' argument for hl.init() will be None.
     # Spark master is typically configured via spark-defaults.conf or --master on spark-submit,
-    # or Hail determines it from the environment.
-    spark_master_arg_for_hl_init = None 
-
-    # Remove spark.master from spark_conf_dict if it exists, as it's preferred to set this outside Hail.
-    if 'spark.master' in spark_conf_dict:
-        print(f"INFO: Removing 'spark.master' from spark_conf_dict. Current value: {spark_conf_dict.pop('spark.master')}")
-        sys.stdout.flush()
-
-    # NOTE: The Spark configurations 'spark.hadoop.fs.gs.block.size' and
-    # 'spark.executor.defaultJavaOptions' have been explicitly removed if present.
-    # Interactive notebook testing showed that passing these specific parameters
-    # (as they were configured in the input JSON for this environment)
-    # caused hl.init() to fail immediately with an IllegalArgumentException.
-    # Do not add these or other Spark parameters back to the spark_conf passed
-    # to hl.init() unless they are clearly documented by Hail for the target
-    # version or have been thoroughly tested in this specific Dataproc environment
-    # to not cause such initialization failures. It's safer to rely on Hail's
-    # defaults or environment-provided Spark configurations when possible.
-    problematic_keys = [
-        'spark.hadoop.fs.gs.block.size',
-        'spark.executor.defaultJavaOptions'
-    ]
-    removed_keys = []
-    for key_to_remove in problematic_keys:
-        if key_to_remove in spark_conf_dict:
-            del spark_conf_dict[key_to_remove]
-            removed_keys.append(key_to_remove)
-    
-    if removed_keys:
-        print(f"INFO: Removed the following problematic Spark configurations before calling hl.init(): {', '.join(removed_keys)}. These were found to cause 'IllegalArgumentException'.")
-        sys.stdout.flush()
+    # or Hail determines it from the environment. The 'master' argument for hl.init() will be None.
+    spark_master_arg_for_hl_init = None
 
     if cluster_mode == "local":
         print("Configuring Hail for local Spark mode. 'spark.master' should be set by Spark environment or defaults (e.g. local[*]).")
@@ -226,23 +174,18 @@ def init_hail(gcs_hail_temp_dir, log_suffix="task", spark_configurations_json_st
             log_file_name = f'hail_{timestamp}_{log_suffix}_{os.getpid()}.log'
             
             print(f"Attempting Hail initialization (Attempt {attempt + 1}/{_HAIL_INIT_ATTEMPTS}). Log: ./{log_file_name}")
+            print(f"Hail will use Spark configurations from the environment.")
             sys.stdout.flush()
             
-            # Use a copy for logging to avoid printing sensitive info if spark_conf_dict is large/complex
-            spark_conf_dict_to_pass = spark_conf_dict.copy() if spark_conf_dict else {}
-            print(f"Using Spark configurations for hl.init: {spark_conf_dict_to_pass}")
-            sys.stdout.flush()
-
             hl.init(
                 tmp_dir=gcs_hail_temp_dir,
                 log=log_file_name,
-                default_reference='GRCh38',
-                spark_conf=spark_conf_dict_to_pass, # Pass the cleaned spark_conf_dict
                 master=spark_master_arg_for_hl_init, # Should be None
                 idempotent=True 
             )
+            hl.default_reference = 'GRCh38' # Set default reference after init
             
-            print(f"Hail initialized successfully. Log file: ./{log_file_name}")
+            print(f"Hail initialized successfully. Log file: ./{log_file_name}. Default reference genome: {hl.default_reference().name}")
             sys.stdout.flush()
 
             current_sc = hl.spark_context()
