@@ -21,7 +21,7 @@ jobs:
     - name: Check for non-breaking spaces and fix them
       id: fix-nbsp
       run: |
-        set -ex # Keep for robust error checking and verbose output
+        set -ex # Enable verbose output and exit on error
         
         COMMIT_MSG="${{ github.event.head_commit.message }}"
         if [[ "$COMMIT_MSG" == *"[bot] Auto-fix non-breaking spaces"* ]]; then
@@ -89,31 +89,41 @@ jobs:
             continue
           fi
           
+          # Check if file contains the UTF-8 NBSP byte sequence (c2 a0)
           if hexdump -C "$file" 2>/dev/null | grep -q "c2 a0"; then
             echo "INFO: Processing NBSPs in $file"
             cp "$file" "$file.backup"
 
-            # Corrected: Added "|| true" to ensure command substitution exits 0 with set -e
             before_nbsp_count=$(hexdump -C "$file" 2>/dev/null | grep -c "c2 a0" || true)
 
-            if ! perl -i -CS -pe 's/\x{00A0}/ /g' "$file" 2>/dev/null; then
-                sed -i 's/\xc2\xa0/ /g' "$file"
-            fi
+            # Use sed with LC_ALL=C for byte-wise replacement of \xc2\xa0 with a space \x20
+            # This is the sole method for replacement now.
+            if LC_ALL=C sed -i 's/\xc2\xa0/ /g' "$file"; then
+                # sed command executed successfully (exit code 0)
+                # Now verify the replacement
+                after_nbsp_count=$(hexdump -C "$file" 2>/dev/null | grep -c "c2 a0" || true)
 
-            # Corrected: Added "|| true" to ensure command substitution exits 0 with set -e
-            after_nbsp_count=$(hexdump -C "$file" 2>/dev/null | grep -c "c2 a0" || true)
-
-            if [ "$after_nbsp_count" -eq 0 ]; then
-                if [ "$before_nbsp_count" -ne 0 ]; then
-                    echo "SUCCESS: Fixed $before_nbsp_count NBSPs in $file."
-                    fixed_files_list="$fixed_files_list $file"
-                    changes_made=true
+                if [ "$after_nbsp_count" -eq 0 ]; then
+                    if [ "$before_nbsp_count" -ne 0 ]; then # NBSPs were present and now are fixed
+                        echo "SUCCESS: Fixed $before_nbsp_count NBSPs in $file."
+                        fixed_files_list="$fixed_files_list $file"
+                        changes_made=true
+                    else # File had NBSPs by initial check, sed ran, after_count is 0, before_count was also 0 (unlikely path if grep -q found it)
+                         # Or, more likely, before_count was non-zero and successfully fixed.
+                        echo "INFO: $file is now clean (0 NBSPs after processing)."
+                         # If before_count was non-zero, it's already handled by the above if.
+                         # If before_count was zero initially by some fluke but grep -q passed, this ensures it's clean.
+                    fi
+                    rm -f "$file.backup"
                 else
-                    echo "INFO: $file is now clean (0 NBSPs after processing)."
+                    # sed ran successfully, but non-breaking spaces remain. This is unexpected with this sed command.
+                    echo "WARNING: sed ran but $file still has $after_nbsp_count NBSPs (was $before_nbsp_count). Reverting."
+                    mv "$file.backup" "$file"
                 fi
-                rm -f "$file.backup"
             else
-                echo "FAILED: $file still has $after_nbsp_count NBSPs (was $before_nbsp_count). Reverted."
+                # sed command itself failed (e.g., permissions, disk space for temp file with -i)
+                # Since 'set -e' is active and sed is in an 'if' condition, this block will be executed on failure.
+                echo "ERROR: sed command failed to execute for $file. Reverting."
                 mv "$file.backup" "$file"
             fi
           else
@@ -125,7 +135,7 @@ jobs:
 
         if [ "$changes_made" = true ]; then
           echo "changes_made=true" >> $GITHUB_OUTPUT
-          echo "files_changed=${fixed_files_list# }" >> $GITHUB_OUTPUT
+          echo "files_changed=${fixed_files_list# }" >> $GITHUB_OUTPUT # Remove potential leading space
         else
           echo "changes_made=false" >> $GITHUB_OUTPUT
           echo "files_changed=" >> $GITHUB_OUTPUT
