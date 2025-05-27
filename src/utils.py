@@ -175,27 +175,27 @@ def init_hail(gcs_hail_temp_dir, log_suffix="task", spark_configurations_json_st
                 idempotent=True # Allows re-initialization with same parameters without error
             )
             print(f"Hail initialized successfully. Log file: ./{log_file_name}")
-Â  Â  Â  Â  Â  Â  print(f"Hail effective cluster mode used for initialization: {cluster_mode}")
-Â  Â  Â  Â  Â  Â  current_sc = hl.spark_context()
-Â  Â  Â  Â  Â  Â  if current_sc:
-Â  Â  Â  Â  Â  Â  Â  Â  print(f"Spark context master: {current_sc.master}")
-Â  Â  Â  Â  Â  Â  Â  Â  print(f"Spark application ID: {current_sc.applicationId}")
-Â  Â  Â  Â  Â  Â  Â  Â  print(f"Spark application name: {current_sc.appName}")
-Â  Â  Â  Â  Â  Â  Â  Â  print(f"Spark default parallelism: {current_sc.defaultParallelism}")
-Â  Â  Â  Â  Â  Â  Â  Â  try:
-Â  Â  Â  Â  Â  Â  Â  Â  Â  Â  num_executors = len(current_sc.statusTracker().getExecutorInfos())
-Â  Â  Â  Â  Â  Â  Â  Â  Â  Â  print(f"Spark num active executors (incl. driver if YARN client mode): {num_executors}")
-Â  Â  Â  Â  Â  Â  Â  Â  except Exception as ex_info_err:
-Â  Â  Â  Â  Â  Â  Â  Â  Â  Â  print(f"Could not retrieve detailed executor count: {ex_info_err}")
-Â  Â  Â  Â  Â  Â  Â  Â  try:
-Â  Â  Â  Â  Â  Â  Â  Â  Â  Â  if current_sc.uiWebUrl:
-Â  Â  Â  Â  Â  Â  Â  Â  Â  Â  Â  Â  print(f"Spark Web UI available at: {current_sc.uiWebUrl}")
-Â  Â  Â  Â  Â  Â  Â  Â  except Exception:
-Â  Â  Â  Â  Â  Â  Â  Â  Â  Â  print("Spark Web UI URL not available through context.")
-Â  Â  Â  Â  Â  Â  else:
-Â  Â  Â  Â  Â  Â  Â  Â  print("Spark context not available after Hail initialization.")
-Â  Â  Â  Â  Â  Â  return
-Â  Â  Â  Â  except Exception as e:
+Â  Â  Â  Â  Â  Â  print(f"Hail effective cluster mode used for initialization: {cluster_mode}")
+Â  Â  Â  Â  Â  Â  current_sc = hl.spark_context()
+Â  Â  Â  Â  Â  Â  if current_sc:
+Â  Â  Â  Â  Â  Â  Â  Â  print(f"Spark context master: {current_sc.master}")
+Â  Â  Â  Â  Â  Â  Â  Â  print(f"Spark application ID: {current_sc.applicationId}")
+Â  Â  Â  Â  Â  Â  Â  Â  print(f"Spark application name: {current_sc.appName}")
+Â  Â  Â  Â  Â  Â  Â  Â  print(f"Spark default parallelism: {current_sc.defaultParallelism}")
+Â  Â  Â  Â  Â  Â  Â  Â  try:
+Â  Â  Â  Â  Â  Â  Â  Â  Â  Â  num_executors = len(current_sc.statusTracker().getExecutorInfos())
+Â  Â  Â  Â  Â  Â  Â  Â  Â  Â  print(f"Spark num active executors (incl. driver if YARN client mode): {num_executors}")
+Â  Â  Â  Â  Â  Â  Â  Â  except Exception as ex_info_err:
+Â  Â  Â  Â  Â  Â  Â  Â  Â  Â  print(f"Could not retrieve detailed executor count: {ex_info_err}")
+Â  Â  Â  Â  Â  Â  Â  Â  try:
+Â  Â  Â  Â  Â  Â  Â  Â  Â  Â  if current_sc.uiWebUrl:
+Â  Â  Â  Â  Â  Â  Â  Â  Â  Â  Â  Â  print(f"Spark Web UI available at: {current_sc.uiWebUrl}")
+Â  Â  Â  Â  Â  Â  Â  Â  except Exception:
+Â  Â  Â  Â  Â  Â  Â  Â  Â  Â  print("Spark Web UI URL not available through context.")
+Â  Â  Â  Â  Â  Â  else:
+Â  Â  Â  Â  Â  Â  Â  Â  print("Spark context not available after Hail initialization.")
+Â  Â  Â  Â  Â  Â  return
+Â  Â  Â  Â  except Exception as e:
             print(f"Hail initialization failed (Attempt {attempt + 1}/{_HAIL_INIT_ATTEMPTS}): {e}")
             if attempt < _HAIL_INIT_ATTEMPTS - 1:
                 print("Retrying Hail initialization...")
