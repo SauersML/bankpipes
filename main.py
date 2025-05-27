@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 main.py  –  stand-alone orchestrator for the AoU PRS pipeline.
 
