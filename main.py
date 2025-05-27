@@ -136,20 +136,6 @@ class Config:
         self.gcs_intermediate = f"gs://{self.bucket}/{GCS_REUSABLE_INTERMEDIATES_SUFFIX}"
         self.gcs_hail_tmp = f"gs://{self.bucket}/{GCS_HAIL_TEMP_RUN_SPECIFIC_SUFFIX}/{ts}"
         self.gcs_outputs = f"gs://{self.bucket}/{GCS_RUN_OUTPUTS_SUFFIX}/{ts}"
-        # Spark conf
-        spark_conf = [
-            "spark.hadoop.fs.gs.requester.pays.mode=AUTO",
-            f"spark.hadoop.fs.gs.requester.pays.project.id={self.env['GOOGLE_PROJECT']}",
-            f"spark.hadoop.fs.gs.project.id={self.env['GOOGLE_PROJECT']}",
-            # leave dynamicAllocation unset (not supported) → cluster alloc determines resources
-        ]
-        extra = os.getenv("EXTRA_SPARK_CONF")
-        if extra:
-            try:
-                spark_conf.extend(json.loads(extra))
-            except Exception as e:
-                log.warning("Could not parse EXTRA_SPARK_CONF (%s)", e)
-        self.spark_conf_json = json.dumps(spark_conf)
         # Models CSV
         self.models_csv = self.script_dir / MODELS_CSV_FILENAME
         if not self.models_csv.exists():
@@ -202,7 +188,6 @@ def main(cfg: Config) -> None:
         "--n_controls_downsample", str(VDS_PREP_N_CONTROLS_DOWNSAMPLE),
         "--downsampling_random_state", str(VDS_PREP_DOWNSAMPLING_RANDOM_STATE),
         "--google_billing_project", cfg.env["GOOGLE_PROJECT"],
-        "--spark_configurations_json", cfg.spark_conf_json,
         # Instruct Hail to run on the Dataproc YARN cluster
         "--hail_cluster_mode", "dataproc_yarn"
     ]
@@ -246,7 +231,6 @@ def main(cfg: Config) -> None:
                 "--output_final_hail_table_gcs_path", ht_gcs,
                 "--output_final_score_csv_gcs_path", csv_gcs,
                 "--google_billing_project", cfg.env["GOOGLE_PROJECT"],
-                "--spark_configurations_json", cfg.spark_conf_json,
                 # Instruct Hail to run on the Dataproc YARN cluster
                 "--hail_cluster_mode", "dataproc_yarn"
             ],
