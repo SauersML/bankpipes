@@ -58,9 +58,14 @@ def load_full_vds(path: str, fs_gcs) -> hl.vds.VariantDataset:
         print("VDS successfully loaded (initial column presence check passed).")
         # The full n_samples count will be expensive on the raw VDS. 
         print(f"Initial VDS variant_data n_partitions: {vds.variant_data.n_partitions()}")
-        print(f"Initial VDS reference_data n_partitions: {vds.reference_data.n_partitions()}\n")
-        return vds
-    except Exception as e:
+        print(f"Initial VDS reference_data n_partitions: {vds.reference_data.n_partitions()}")
+        try:
+            # Log the entry schema of the variant_data component to understand its structure
+            print(f"Initial VDS variant_data entry schema: {vds.variant_data.entry.dtype}\n")
+        except Exception as schema_e:
+            print(f"Could not retrieve VDS variant_data entry schema: {schema_e}\n")
+        return vds
+    except Exception as e:
         if "requester_pays" in str(e).lower():
             print(f"FATAL ERROR: Failed to load VDS from {path} due to requester pays issue. Check Hail/Spark GCS connector config. Error: {e}")
         else:
