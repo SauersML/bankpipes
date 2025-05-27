@@ -210,7 +210,8 @@ def main(cfg: Config) -> None:
         "--hail_cluster_mode", "dataproc_yarn"
     ]
     if VDS_PREP_ENABLE_DOWNSAMPLING:
-
+        prep_args.append("--enable_downsampling_for_vds")
+            
     rc = _run_subprocess(prep_args, env, log_dir/"02_prepare_vds.log", "prepare_base_vds")
     if rc:
         sys.exit("prepare_base_vds failed")
