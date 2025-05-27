@@ -311,7 +311,7 @@ def filter_vds_by_intervals(vds: hl.vds.VariantDataset, gcs_intervals_path: str,
         print(f"[{prs_id}] ERROR filtering VDS by intervals using {gcs_intervals_path}: {e}")
         return None
 
-# --- CORRECT DOSAGE CALCULATION FUNCTION (from original notebook) ---
+# --- DOSAGE CALCULATION FUNCTION ---
 def calculate_effect_allele_dosage(mt_row):
     """
     Calculates effect allele dosage from Hail MatrixTable row.
