@@ -21,16 +21,20 @@ jobs:
       id: fix-nbsp
       run: |
         # Skip if this is already a bot commit to avoid infinite loops
-        if [[ "${{ github.event.head_commit.message }}" == *"[bot] Fix non-breaking spaces"* ]]; then
+        COMMIT_MSG="${{ github.event.head_commit.message }}"
+        if [[ "$COMMIT_MSG" == *"[bot] Fix non-breaking spaces"* ]] || [[ "$COMMIT_MSG" == *"Auto-fix non-breaking spaces"* ]]; then
           echo "Skipping: This is already a bot commit"
           echo "changes_made=false" >> $GITHUB_OUTPUT
           exit 0
         fi
         
-        # Find all text files (excluding binary files, .git, node_modules, etc.)
         echo "Scanning for non-breaking spaces..."
         
-        # Create a list of files to check (excluding common binary/generated directories)
+        # Initialize variables
+        changes_made=false
+        files_changed=()
+        
+        # Find all text files and process them directly
         find . -type f \
           -not -path "./.git/*" \
           -not -path "./node_modules/*" \
@@ -42,6 +46,7 @@ jobs:
           -not -path "./dist/*" \
           -not -path "./.next/*" \
           -not -path "./target/*" \
+          -not -path "./.github/*" \
           -not -name "*.png" \
           -not -name "*.jpg" \
           -not -name "*.jpeg" \
@@ -56,51 +61,109 @@ jobs:
           -not -name "*.exe" \
           -not -name "*.dll" \
           -not -name "*.so" \
-          -not -name "*.dylib" > files_to_check.txt
+          -not -name "*.dylib" \
+          -not -name "*.bin" \
+          -not -name "*.class" | while IFS= read -r file; do
+          
+          # Skip if not a regular file
+          if [ ! -f "$file" ]; then
+            continue
+          fi
+          
+          # Check if file is likely binary (simple heuristic)
+          if file "$file" | grep -q "binary\|executable\|archive"; then
+            continue
+          fi
+          
+          # Check if file contains non-breaking spaces using multiple methods
+          has_nbsp=false
+          
+          # Method 1: Check for UTF-8 encoded non-breaking space (0xC2 0xA0)
+          if hexdump -C "$file" | grep -q "c2 a0"; then
+            has_nbsp=true
+          fi
+          
+          # Method 2: Check using od for the Unicode character
+          if od -t x1 "$file" | grep -q "c2 a0"; then
+            has_nbsp=true
+          fi
+          
+          # Method 3: Python check as fallback
+          if python3 -c "
+import sys
+try:
+    with open('$file', 'rb') as f:
+        content = f.read()
+    if b'\\xc2\\xa0' in content:
+        sys.exit(1)
+except:
+    pass
+" 2>/dev/null; then
+            : # No non-breaking spaces found
+          else
+            has_nbsp=true
+          fi
+          
+          if [ "$has_nbsp" = true ]; then
+            echo "Found non-breaking spaces in: $file"
+            
+            # Create a Python script to fix the file
+            python3 -c "
+import sys
+import os
+
+try:
+    # Read the file in binary mode
+    with open('$file', 'rb') as f:
+        content = f.read()
+    
+    # Replace UTF-8 encoded non-breaking spaces with regular spaces
+    original_content = content
+    content = content.replace(b'\\xc2\\xa0', b' ')  # UTF-8 non-breaking space
+    content = content.replace(b'\\xa0', b' ')       # Latin-1 non-breaking space
+    
+    # Write back if changes were made
+    if content != original_content:
+        with open('$file', 'wb') as f:
+            f.write(content)
+        print('Successfully fixed: $file')
+        sys.exit(0)  # Success
+    else:
+        print('No changes needed for: $file')
+        sys.exit(1)  # No changes
         
-        changes_made=false
-        files_changed=()
-        
-        # Check each file for non-breaking spaces (U+00A0)
-        while IFS= read -r file; do
-          if [ -f "$file" ]; then
-            # Check if file contains non-breaking spaces
-            if grep -l $'\u00A0' "$file" >/dev/null 2>&1; then
-              echo "Found non-breaking spaces in: $file"
-              
-              # Create backup and fix the file
-              cp "$file" "$file.backup"
-              
-              # Replace non-breaking spaces with regular spaces
-              # Using multiple methods to catch different encodings
-              sed -i 's/\u00A0/ /g' "$file" 2>/dev/null || true
-              sed -i 's/\xC2\xA0/ /g' "$file" 2>/dev/null || true
-              
-              # Also use tr as fallback
-              tr '\u00A0' ' ' < "$file.backup" > "$file.tmp" && mv "$file.tmp" "$file"
-              
-              # Verify the fix worked
-              if ! grep -l $'\u00A0' "$file" >/dev/null 2>&1; then
+except Exception as e:
+    print(f'Error processing $file: {e}')
+    sys.exit(2)  # Error
+"
+            
+            # Check the Python script exit code
+            case $? in
+              0)
                 echo "✅ Fixed non-breaking spaces in: $file"
                 files_changed+=("$file")
                 changes_made=true
-                rm "$file.backup"
-              else
-                echo "❌ Failed to fix: $file (restoring backup)"
-                mv "$file.backup" "$file"
-              fi
-            fi
+                ;;
+              1)
+                echo "ℹ️ No changes needed for: $file"
+                ;;
+              2)
+                echo "❌ Error processing: $file"
+                ;;
+            esac
           fi
-        done < files_to_check.txt
+        done
         
-        rm -f files_to_check.txt
-        
+        # Export results
         if [ "$changes_made" = true ]; then
           echo "Files with fixes: ${files_changed[*]}"
           echo "changes_made=true" >> $GITHUB_OUTPUT
-          echo "files_changed=${files_changed[*]}" >> $GITHUB_OUTPUT
+          
+          # Convert array to space-separated string for output
+          files_string=$(printf "%s " "${files_changed[@]}")
+          echo "files_changed=${files_string% }" >> $GITHUB_OUTPUT
         else
-          echo "No non-breaking spaces found"
+          echo "No non-breaking spaces found or no changes made"
           echo "changes_made=false" >> $GITHUB_OUTPUT
         fi
 
@@ -114,13 +177,17 @@ jobs:
       if: steps.fix-nbsp.outputs.changes_made == 'true'
       run: |
         git add -A
-        git commit -m "[bot] Fix non-breaking spaces in code files
+        git status
         
-        - Automatically replaced non-breaking spaces (U+00A0) with regular spaces
-        - Files affected: ${{ steps.fix-nbsp.outputs.files_changed }}
-        - This prevents Python SyntaxError and other parsing issues
-        
-        Skip-CI: true"
+        # Create commit message
+        git commit -m "[bot] Auto-fix non-breaking spaces in code files
+
+Automatically replaced non-breaking spaces (U+00A0) with regular spaces.
+This prevents Python SyntaxError and other parsing issues.
+
+Files affected: ${{ steps.fix-nbsp.outputs.files_changed }}
+
+[skip ci]"
         
         # Push the changes
         git push
@@ -130,14 +197,19 @@ jobs:
       uses: actions/github-script@v7
       with:
         script: |
+          const files = '${{ steps.fix-nbsp.outputs.files_changed }}';
+          const fileList = files.split(' ').filter(f => f.length > 0).map(f => `- \`${f}\``).join('\n');
+          
           github.rest.issues.createComment({
             issue_number: context.issue.number,
             owner: context.repo.owner,
             repo: context.repo.repo,
-            body: '🤖 **Auto-fix Applied**: Non-breaking spaces were detected and automatically replaced with regular spaces in the following files:\n\n' +
-                  '${{ steps.fix-nbsp.outputs.files_changed }}'.split(' ').map(f => `- \`${f}\``).join('\n') +
-                  '\n\nThis prevents syntax errors and parsing issues. The changes have been committed automatically.'
-          })
+            body: `🤖 **Auto-fix Applied**: Non-breaking spaces were detected and automatically replaced with regular spaces in the following files:
+
+${fileList}
+
+This prevents syntax errors and parsing issues. The changes have been committed automatically.`
+          });
 
     - name: Summary
       run: |
@@ -145,5 +217,5 @@ jobs:
           echo "✅ Non-breaking spaces were found and fixed automatically"
           echo "📝 Files updated: ${{ steps.fix-nbsp.outputs.files_changed }}"
         else
-          echo "✅ No non-breaking spaces detected in the repository"
+          echo "✅ No non-breaking spaces detected or no fixes needed"
         fi
