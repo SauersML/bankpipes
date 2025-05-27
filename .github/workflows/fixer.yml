@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [ main, master, develop ]
 
+# Add explicit permissions for the workflow
+permissions:
+  contents: write
+  pull-requests: write
+  actions: read
+
 jobs:
   fix-non-breaking-spaces:
     runs-on: ubuntu-latest
@@ -101,19 +107,20 @@ jobs:
           if hexdump -C "$file" 2>/dev/null | grep -q "c2 a0"; then
             echo "DEBUG: Found non-breaking spaces in: $file"
             echo "DEBUG: Hex dump sample:"
-            hexdump -C "$file" | grep "c2 a0" | head -3
+            hexdump -C "$file" | grep "c2 a0" | head -3 2>/dev/null || true
             
             echo "DEBUG: Creating backup and fixing..."
             cp "$file" "$file.backup"
             
             echo "DEBUG: Before fix - checking content:"
-            hexdump -C "$file" | grep "c2 a0" | wc -l
+            before_count=$(hexdump -C "$file" | grep -c "c2 a0" 2>/dev/null || echo "0")
+            echo "$before_count"
             
             # Use perl for more reliable UTF-8 handling
             perl -i -pe 's/\x{00A0}/ /g' "$file" 2>/dev/null || sed -i 's/\xc2\xa0/ /g' "$file"
             
             echo "DEBUG: After fix - checking content:"
-            remaining=$(hexdump -C "$file" | grep "c2 a0" | wc -l || echo "0")
+            remaining=$(hexdump -C "$file" | grep -c "c2 a0" 2>/dev/null || echo "0")
             echo "DEBUG: Remaining non-breaking spaces: $remaining"
             
             if [ "$remaining" -eq 0 ]; then
@@ -152,9 +159,16 @@ jobs:
     - name: Commit and push changes
       if: steps.fix-nbsp.outputs.changes_made == 'true'
       run: |
+        echo "DEBUG: Attempting to commit and push changes..."
         git add -A
         git commit -m "[bot] Auto-fix non-breaking spaces in:${{ steps.fix-nbsp.outputs.files_changed }} [skip ci]"
-        git push
+        
+        # Try to push with better error handling
+        if git push; then
+          echo "SUCCESS: Changes pushed successfully"
+        else
+          exit 1
+        fi
 
     - name: Create comment on PR
       if: steps.fix-nbsp.outputs.changes_made == 'true' && github.event_name == 'pull_request'
