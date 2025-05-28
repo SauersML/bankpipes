@@ -151,9 +151,46 @@ def main(cfg: Config) -> None:
     log_dir = work_dir / "logs"
     work_dir.mkdir(exist_ok=True)
     log_dir.mkdir(exist_ok=True)
-    env = _build_env(PYTHON_EXECUTABLE, cfg.script_dir)
+    env = _build_env(PYTHON_EXECUTABLE, cfg.script_dir) # env is built here
+
+    # ┌──────────────────────────────────────────────────────────────────────────────┐
+    # │ Step 0 - Compatible Dependencies (PySpark, nest-asyncio)                     │
+    # └──────────────────────────────────────────────────────────────────────────────┘
+    log.info("┌──────────────────────────────────────────────────────────────────────────────┐")
+    log.info("│ Step 0 - Compatible Dependencies                                             │")
+    log.info("└──────────────────────────────────────────────────────────────────────────────┘")
+    
+    setup_dependencies_script_path = cfg.script_dir / "src" / "dependencies.py"
+    
+    if not setup_dependencies_script_path.exists():
+        log.error(f"FATAL: Dependency setup script not found at {setup_dependencies_script_path}")
+        log.error("Please create 'src/dependencies.py' with the required installation logic.")
+        sys.exit(f"Missing dependency setup script: {setup_dependencies_script_path}")
+
+    log.info(f"Executing dependency setup script: {setup_dependencies_script_path}")
+    rc_setup = _run_subprocess(
+        [PYTHON_EXECUTABLE, str(setup_dependencies_script_path)],
+        env, # Pass the existing environment, _run_subprocess will use it
+        log_dir / "00_dependencies.log", # Dedicated log file for this step
+        "dependencies" # Step name for logging within _run_subprocess
+    )
+
+    if rc_setup != 0:
+        log.error(f"CRITICAL: Step 0 (dependencies.py) FAILED with exit code {rc_setup}. "
+                  "The PySpark/nest-asyncio environment could not be correctly configured. "
+                  f"Review its dedicated log: {log_dir / '00_dependencies.log'}")
+        log.error("Subsequent Hail/Spark operations are highly likely to fail. Exiting pipeline.")
+        sys.exit("FATAL: Critical dependency setup failed.")
+    else:
+        log.info(f"Step 0 (dependencies.py) completed successfully. "
+                 f"Check log {log_dir / '00_dependencies.log'} for details on PySpark versioning.")
+        # A small delay so filesystem changes from pip are fully visible
+        # time.sleep(5) 
 
     # ── Step 1 – fetch_phenotypes ──────────────────────────────────────────────
+    log.info("┌──────────────────────────────────────────────────────────────────────────────┐")
+    log.info("│ Step 1 – Fetch Phenotypes                                                    │")
+    log.info("└──────────────────────────────────────────────────────────────────────────────┘")
     pheno_csv_gcs = f"{cfg.gcs_intermediate}/phenotype/{cfg.pheno_name.replace(' ','_')}_cases.csv"
     rc = _run_subprocess(
         [
