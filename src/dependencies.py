@@ -48,7 +48,7 @@ def install_package(package_name_with_version: str) -> bool:
                 log.info("Pip STDERR (might contain progress/warnings):\n%s", process_result.stderr.strip())
         
         if process_result.returncode == 0:
-            log.info(f"Pip command for {package_name_with_version} completed with exit code 0 (assumed success).")
+            log.info(f"Pip command for {package_name_with_version} completed (assumed success).")
             return True
         else:
             log.error(f"ERROR: Pip command for {package_name_with_version} FAILED with exit code {process_result.returncode}.")
@@ -85,14 +85,14 @@ def verify_pyspark(expected_version: str) -> bool:
             log.warning(f"WARNING: Detected PySpark version '{pyspark_version_actual}' DOES NOT MATCH target '{expected_version}'.")
             log.warning("This might be due to existing conflicting installations, pip resolver behavior, or issues with the install process.")
             # Depending on strictness, this could be treated as a failure.
-            # For this critical dependency, we'll consider it a failure for the setup script's success.
+            # For this dependency, we'll consider it a failure for the setup script's success.
             return False
             
     except ModuleNotFoundError:
-        log.error("CRITICAL ERROR: PySpark module NOT FOUND after installation attempt.")
+        log.error("ERROR: PySpark module NOT FOUND after installation attempt.")
         return False
     except Exception as e:
-        log.error(f"CRITICAL ERROR: An unexpected error occurred during PySpark verification: {e}", exc_info=True)
+        log.error(f"ERROR: An unexpected error occurred during PySpark verification: {e}", exc_info=True)
         return False
 
 def verify_nest_asyncio() -> bool:
@@ -104,7 +104,7 @@ def verify_nest_asyncio() -> bool:
         import nest_asyncio
         nest_asyncio_location = os.path.dirname(nest_asyncio.__file__)
         log.info(f"Successfully imported nest_asyncio from: {nest_asyncio_location}")
-        # Version check for nest_asyncio is less critical than exact pyspark version for this problem
+        # Version check for nest_asyncio is less than exact pyspark version for this problem
         return True
     except ModuleNotFoundError:
         log.warning("WARNING: nest_asyncio module not found after installation attempt. This might cause issues for some Hail/GCS operations.")
@@ -131,8 +131,8 @@ if __name__ == "__main__":
 
     log.info("--- Dependency Setup Script Finished ---")
 
-    if not pyspark_verified: # PySpark verification is the most critical part
-        log.error("CRITICAL FAILURE: PySpark was not installed or verified to the target version.")
+    if not pyspark_verified: # PySpark verification is the most part
+        log.error("FAILURE: PySpark was not installed or verified to the target version.")
     
     if not nest_asyncio_verified: # nest_asyncio is important but perhaps not immediately fatal if missing
         log.warning("Nest-asyncio was not successfully verified. This might lead to issues later.")
