@@ -207,7 +207,7 @@ def main(cfg: Config) -> None:
             "--output_phenotype_csv_gcs_path", pheno_csv_gcs,
             "--google_billing_project", cfg.env["GOOGLE_PROJECT"],
         ],
-        env, log_dir/"01_fetch_phenotypes.log", "fetch_phenotypes"
+        effective_env, log_dir/"01_fetch_phenotypes.log", "fetch_phenotypes"
     )
     if rc:
         sys.exit("fetch_phenotypes failed")
