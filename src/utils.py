@@ -131,41 +131,8 @@ def init_hail(gcs_hail_temp_dir: str, log_suffix: str = "task"):
 
     for attempt in range(_HAIL_INIT_ATTEMPTS):
         try:
-            print(f"Attempt {attempt + 1}/{_HAIL_INIT_ATTEMPTS}: Checking initial Hail backend state...")
-            sys.stdout.flush()
-            
-            existing_spark_backend_active = False
-            try:
-                # For Hail 0.2.x, hl.utils.java.Env.backend() is a primary way to check if any backend is active.
-                if hl.utils.java.Env.backend() is not None:
-                    # If a backend is reported by Env.backend(), then try to get its type.
-                    # This call to hl.current_backend() should be safer now.
-                    current_backend_obj = hl.current_backend()
-                    current_backend_status_str = str(current_backend_obj) if current_backend_obj else "Unknown (hl.utils.java.Env.backend() was not None)"
-                    print(f"Attempt {attempt + 1}: Existing Hail backend detected via hl.utils.java.Env.backend(). Type: {current_backend_status_str}")
-                    
-                    # Specifically check if it's a SparkBackend that needs stopping.
-                    if "SparkBackend" in current_backend_status_str:
-                        existing_spark_backend_active = True
-                else:
-                    print(f"Attempt {attempt + 1}: No active Hail backend detected by hl.utils.java.Env.backend().")
-            except Exception as e_backend_check:
-                # This might happen if Hail is in a strange state or not initialized at all.
-                # It's generally safer to proceed with initialization if unsure.
-                print(f"Attempt {attempt + 1}: Error or unexpected state during Hail backend check (might be normal if not initialized): {e_backend_check}")
-            sys.stdout.flush()
-
-            if existing_spark_backend_active:
-                print(f"Attempt {attempt + 1}: An existing Hail SparkBackend session was found. Stopping it...")
-                sys.stdout.flush()
-                hl.stop()
-                time.sleep(3) # Allow Spark context to fully release
-            else:
-                print(f"Attempt {attempt + 1}: No active Hail SparkBackend found (or backend is not Spark, or check failed), proceeding with initialization.")
-            sys.stdout.flush()
-            
             timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-            # Ensure log file name is in the current directory as per specification
+            # log file name is in the current directory as per specification
             log_file_name = f'./hail_{timestamp}_{log_suffix}_{os.getpid()}.log'
             
             print(f"Attempting Hail initialization (Attempt {attempt + 1}/{_HAIL_INIT_ATTEMPTS}). Log: {log_file_name}")
@@ -181,7 +148,7 @@ def init_hail(gcs_hail_temp_dir: str, log_suffix: str = "task"):
             print(f"Hail initialized successfully. Log file: {log_file_name}. Default reference genome: {hl.default_reference().name}")
             sys.stdout.flush()
 
-            # Optional: Log Spark context details for verification
+            # Log Spark context details for verification
             current_sc = hl.spark_context()
             if current_sc:
                 actual_master = "unknown (failed to retrieve)"
@@ -199,7 +166,6 @@ def init_hail(gcs_hail_temp_dir: str, log_suffix: str = "task"):
                     print(f"WARNING: Spark master '{actual_master}' does not look like a typical Dataproc (yarn) or local setup. Review Spark configurations if behavior is unexpected.")
                     sys.stdout.flush()
                 
-                # Adding more suggested diagnostics from the issue's "OTHER STUDENT THINKS" section for robustness
                 try:
                     sc_conf_master = current_sc.getConf().get('spark.master')
                     print(f"SparkContext Master URL (from conf): {sc_conf_master}")
