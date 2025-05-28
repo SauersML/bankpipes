@@ -163,37 +163,35 @@ def main(cfg: Config) -> None:
     log_dir = work_dir / "logs"
     work_dir.mkdir(exist_ok=True)
     log_dir.mkdir(exist_ok=True)
-    env = _build_env() # env is built here
+
+    effective_env = _build_env(cfg.script_dir) # Pass cfg.script_dir for PYTHONPATH
+    log.info(f"Subprocess PYTHONPATH will be: {effective_env.get('PYTHONPATH')}")
 
     # ┌──────────────────────────────────────────────────────────────────────────────┐
-    # │ Step 0 - Compatible Dependencies (PySpark, nest-asyncio)                     │
+    # │ Step 0 - Ensure Compatible Dependencies                                      │
     # └──────────────────────────────────────────────────────────────────────────────┘
     log.info("┌──────────────────────────────────────────────────────────────────────────────┐")
-    log.info("│ Step 0 - Compatible Dependencies                                             │")
+    log.info("│ Step 0 - Ensure Compatible Dependencies                                      │")
     log.info("└──────────────────────────────────────────────────────────────────────────────┘")
     
-    setup_dependencies_script_path = cfg.script_dir / "src" / "dependencies.py"
-    
-    if not setup_dependencies_script_path.exists():
-        log.error(f"FATAL: Dependency setup script not found at {setup_dependencies_script_path}")
-        log.error("Please create 'src/dependencies.py' with the required installation logic.")
-        sys.exit(f"Missing dependency setup script: {setup_dependencies_script_path}")
+    setup_dependencies_script_path = cfg.script_dir / "src" / "dependencies.py" 
 
-    log.info(f"Executing dependency setup script: {setup_dependencies_script_path}")
+
+    log.info(f"Executing dependency setup script: {str(setup_dependencies_script_path)}")
+    # The 'effective_env' is passed to the subprocess.
     rc_setup = _run_subprocess(
         [PYTHON_EXECUTABLE, str(setup_dependencies_script_path)],
-        env, # Pass the existing environment, _run_subprocess will use it
-        log_dir / "00_dependencies.log", # Dedicated log file for this step
-        "dependencies" # Step name for logging within _run_subprocess
+        effective_env, 
+        log_dir / "00_dependencies.log", 
+        "dependencies" 
     )
 
-    if rc_setup != 0:
-        log.info(f"CRITICAL: Step 0 (dependencies.py) FAILED with exit code {rc_setup}. "
-                  "The PySpark/nest-asyncio environment could not be correctly configured. "
-                  f"Review its dedicated log: {log_dir / '00_dependencies.log'}")
+    if rc_setup != 0: # If dependencies.py (Step 0) exited with an error
+        log.info(f"Step 0 (dependencies.py) FAILED with exit code {rc_setup}. "
+                  f"Review the dedicated log for Step 0: {log_dir / '00_dependencies.log'}")
     else:
         log.info(f"Step 0 (dependencies.py) completed successfully. "
-                 f"Check log {log_dir / '00_dependencies.log'} for details on PySpark versioning.")
+                 f"Check log {log_dir / '00_dependencies.log'} for details on package installations and Python imports.")
         
     # ── Step 1 – fetch_phenotypes ──────────────────────────────────────────────
     log.info("┌──────────────────────────────────────────────────────────────────────────────┐")
