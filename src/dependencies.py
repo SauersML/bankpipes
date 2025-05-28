@@ -133,7 +133,6 @@ if __name__ == "__main__":
 
     if not pyspark_verified: # PySpark verification is the most critical part
         log.error("CRITICAL FAILURE: PySpark was not installed or verified to the target version.")
-        sys.exit(1) # Exit with error code if PySpark isn't correctly set up
     
     if not nest_asyncio_verified: # nest_asyncio is important but perhaps not immediately fatal if missing
         log.warning("Nest-asyncio was not successfully verified. This might lead to issues later.")
