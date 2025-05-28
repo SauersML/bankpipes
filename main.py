@@ -273,7 +273,7 @@ def main(cfg: Config) -> None:
                 "--output_final_score_csv_gcs_path", csv_gcs,
                 "--google_billing_project", cfg.env["GOOGLE_PROJECT"],
             ],
-            env, logs["proc"], f"{m_id}:process"
+            env, logs["analyze"], f"{m_id}:analyze"
         )
         if rc1:
             log.error("%s failed (processing)", m_id)
