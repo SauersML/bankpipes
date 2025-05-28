@@ -187,7 +187,7 @@ def main(cfg: Config) -> None:
     )
 
     if rc_setup != 0: # If dependencies.py (Step 0) exited with an error
-        log.info(f"Step 0 (dependencies.py) FAILED with exit code {rc_setup}. "
+        log.info(f"Step 0 (dependencies.py) FAILED. rc_setup: {rc_setup}. "
                   f"Review the dedicated log for Step 0: {log_dir / '00_dependencies.log'}")
     else:
         log.info(f"Step 0 (dependencies.py) completed successfully. "
