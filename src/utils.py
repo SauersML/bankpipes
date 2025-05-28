@@ -133,35 +133,35 @@ def init_hail(gcs_hail_temp_dir: str, log_suffix: str = "task"):
         try:
             print(f"Attempt {attempt + 1}/{_HAIL_INIT_ATTEMPTS}: Checking initial Hail backend state...")
             sys.stdout.flush()
-            existing_backend_str = "None" # Default to string "None"
+            
+            existing_spark_backend_active = False
             try:
-                # Check if a Spark context already exists without trying to initialize one.
-                # This is a common way to see if Hail might have been initialized previously.
-                if hl.spark_context(no_init=True):
-                    # If a context exists, then a backend must also exist.
-                    # Attempt to get its string representation.
-                    current_backend_obj = hl.current_backend() # This call should now be safe if a context exists.
-                    if current_backend_obj:
-                        existing_backend_str = str(current_backend_obj)
-                    print(f"Attempt {attempt + 1}: Initial hl.current_backend() reports: {existing_backend_str}")
+                # For Hail 0.2.x, hl.utils.java.Env.backend() is a primary way to check if any backend is active.
+                if hl.utils.java.Env.backend() is not None:
+                    # If a backend is reported by Env.backend(), then try to get its type.
+                    # This call to hl.current_backend() should be safer now.
+                    current_backend_obj = hl.current_backend()
+                    current_backend_status_str = str(current_backend_obj) if current_backend_obj else "Unknown (hl.utils.java.Env.backend() was not None)"
+                    print(f"Attempt {attempt + 1}: Existing Hail backend detected via hl.utils.java.Env.backend(). Type: {current_backend_status_str}")
+                    
+                    # Specifically check if it's a SparkBackend that needs stopping.
+                    if "SparkBackend" in current_backend_status_str:
+                        existing_spark_backend_active = True
                 else:
-                    print(f"Attempt {attempt + 1}: No existing Spark context found by hl.spark_context(no_init=True). Assuming no active Hail SparkBackend.")
-                    existing_backend_str = "None" # Explicitly set to "None"
-            except Exception as e_current_backend:
-                # Log the exception but assume no backend is active or it's not a state we can/should stop.
-                print(f"Attempt {attempt + 1}: Error or info when checking hl.current_backend() (might be normal if Hail is not yet initialized): {e_current_backend}")
-                existing_backend_str = "Error or None" # Indicate an issue or non-initialized state
+                    print(f"Attempt {attempt + 1}: No active Hail backend detected by hl.utils.java.Env.backend().")
+            except Exception as e_backend_check:
+                # This might happen if Hail is in a strange state or not initialized at all.
+                # It's generally safer to proceed with initialization if unsure.
+                print(f"Attempt {attempt + 1}: Error or unexpected state during Hail backend check (might be normal if not initialized): {e_backend_check}")
             sys.stdout.flush()
 
-            # If a SparkBackend is already active, stop it.
-            # Check if "SparkBackend" is in the string representation.
-            if "SparkBackend" in existing_backend_str:
-                print(f"Attempt {attempt + 1}: An existing Hail SparkBackend session was found ({existing_backend_str}). Stopping it...")
+            if existing_spark_backend_active:
+                print(f"Attempt {attempt + 1}: An existing Hail SparkBackend session was found. Stopping it...")
                 sys.stdout.flush()
                 hl.stop()
                 time.sleep(3) # Allow Spark context to fully release
             else:
-                print(f"Attempt {attempt + 1}: No active Hail SparkBackend session found (or backend is not SparkBackend: {existing_backend_str}), proceeding with initialization.")
+                print(f"Attempt {attempt + 1}: No active Hail SparkBackend found (or backend is not Spark, or check failed), proceeding with initialization.")
             sys.stdout.flush()
             
             timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
