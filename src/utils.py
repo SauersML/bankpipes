@@ -142,17 +142,17 @@ def init_hail(gcs_hail_temp_dir: str, log_suffix: str = "task"):
             sys.stdout.flush()
                 
             hl.init(
-                    tmp_dir=gcs_hail_temp_dir,
-                    log=log_file_name
-                )
-                # set the default reference genome by calling the function
-                # with the reference name as an argument, as per Hail documentation.
-                hl.default_reference('GRCh38') 
-            
-                # get the name of the current default reference genome for printing:
-                # Call hl.default_reference() with no arguments to get the ReferenceGenome object,
-                # then access its .name attribute.
-                print(f"Hail initialized successfully. Log file: {log_file_name}. Default reference genome: {hl.default_reference().name}")
+                tmp_dir=gcs_hail_temp_dir,
+                log=log_file_name
+            )
+            # set the default reference genome by calling the function
+            # with the reference name as an argument, as per Hail documentation.
+            hl.default_reference('GRCh38') 
+        
+            # get the name of the current default reference genome for printing:
+            # Call hl.default_reference() with no arguments to get the ReferenceGenome object,
+            # then access its .name attribute.
+            print(f"Hail initialized successfully. Log file: {log_file_name}. Default reference genome: {hl.default_reference().name}")
             sys.stdout.flush()
     
             # Log Spark context details for verification
