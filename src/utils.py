@@ -134,20 +134,22 @@ def init_hail(gcs_hail_temp_dir: str, log_suffix: str = "task"):
             timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
             # log file name is in the current directory as per specification
             log_file_name = f'./hail_{timestamp}_{log_suffix}_{os.getpid()}.log'
-            
+    
             print(f"Attempting Hail initialization (Attempt {attempt + 1}/{_HAIL_INIT_ATTEMPTS}). Log: {log_file_name}")
             print(f"Hail will use Spark configurations from the environment. tmp_dir: {gcs_hail_temp_dir}")
+            # DEBUG: Print the type of hl.init right before calling it
+            print(f"DEBUG: Type of hl.init before call: {type(hl.init)}")
             sys.stdout.flush()
-            
+    
             hl.init(
                 tmp_dir=gcs_hail_temp_dir,
                 log=log_file_name
             )
             hl.default_reference = 'GRCh38'
-            
+    
             print(f"Hail initialized successfully. Log file: {log_file_name}. Default reference genome: {hl.default_reference().name}")
             sys.stdout.flush()
-
+    
             # Log Spark context details for verification
             current_sc = hl.spark_context()
             if current_sc:
@@ -159,13 +161,13 @@ def init_hail(gcs_hail_temp_dir: str, log_suffix: str = "task"):
                 except Exception as e_master:
                     print(f"WARNING: Could not retrieve current_sc.master attribute: {e_master}")
                     sys.stdout.flush()
-
+    
                 print(f"INFO: Hail was initialized, and actual Spark master is '{actual_master}'.")
                 sys.stdout.flush()
                 if "yarn" not in actual_master.lower() and "local" not in actual_master.lower():
                     print(f"WARNING: Spark master '{actual_master}' does not look like a typical Dataproc (yarn) or local setup. Review Spark configurations if behavior is unexpected.")
                     sys.stdout.flush()
-                
+    
                 try:
                     sc_conf_master = current_sc.getConf().get('spark.master')
                     print(f"SparkContext Master URL (from conf): {sc_conf_master}")
@@ -173,7 +175,7 @@ def init_hail(gcs_hail_temp_dir: str, log_suffix: str = "task"):
                 except Exception as e_conf_master:
                     print(f"WARNING: Could not retrieve 'spark.master' from SparkContext config: {e_conf_master}")
                     sys.stdout.flush()
-
+    
                 try:
                     app_id = current_sc.applicationId
                     print(f"SparkContext Application ID: {app_id}")
@@ -181,7 +183,7 @@ def init_hail(gcs_hail_temp_dir: str, log_suffix: str = "task"):
                 except Exception as e_app_id:
                     print(f"WARNING: Could not retrieve SparkContext Application ID: {e_app_id}")
                     sys.stdout.flush()
-                
+    
                 try:
                     web_ui = current_sc.uiWebUrl
                     if web_ui:
@@ -192,7 +194,7 @@ def init_hail(gcs_hail_temp_dir: str, log_suffix: str = "task"):
                 except Exception as e_web_ui:
                     print(f"WARNING: Could not retrieve Spark Web UI: {e_web_ui}")
                     sys.stdout.flush()
-
+    
                 try:
                     default_parallelism = current_sc.defaultParallelism
                     print(f"Spark Default Parallelism: {default_parallelism}")
@@ -200,22 +202,49 @@ def init_hail(gcs_hail_temp_dir: str, log_suffix: str = "task"):
                 except Exception as e_par:
                     print(f"WARNING: Could not retrieve Spark Default Parallelism: {e_par}")
                     sys.stdout.flush()
-
+    
             else:
+                # This case means hl.init() might have appeared to succeed but hl.spark_context() returned None.
                 print("ERROR: Spark context (hl.spark_context()) is None after Hail initialization attempt.")
-                print("This means Spark did not start correctly, or Hail could not establish a connection.")
+                print("This means Spark did not start correctly, or Hail could not establish a connection, despite no immediate exception from hl.init().")
                 print("All subsequent Hail operations will likely fail. Check Hail and Spark logs for detailed errors.")
                 sys.stdout.flush()
-            return
-        except Exception as e:
-            print(f"Hail initialization failed (Attempt {attempt + 1}/{_HAIL_INIT_ATTEMPTS}): {e}")
-            sys.stdout.flush()
-            if attempt < _HAIL_INIT_ATTEMPTS - 1:
-                print("Retrying Hail initialization...")
+                # This situation should be treated as a failure for the current attempt.
+                # the loop's retry logic is hit, we raise an exception.
+                raise RuntimeError("Spark context is None after Hail initialization.")
+            return # Successfully initialized and diagnostics printed, so return from init_hail.
+    
+        except TypeError as te: # Specifically catch TypeError to get detailed traceback
+            import traceback # Import here to keep it local to the exception handling
+            print(f"Hail initialization FAILED (Attempt {attempt + 1}/{_HAIL_INIT_ATTEMPTS}) WITH TypeError: {te}")
+            print("-------------------- FULL TRACEBACK FOR TypeError --------------------")
+            traceback.print_exc() # This prints the full Python stack trace to standard error
+            print("------------------ END OF TRACEBACK FOR TypeError ------------------")
+            sys.stdout.flush() # console output is flushed
+            sys.stderr.flush() # error output (traceback) is flushed
+            if attempt < _HAIL_INIT_ATTEMPTS - 1: # Check if more retries are allowed
+                print(f"Retrying Hail initialization after TypeError (attempt {attempt + 2} of {_HAIL_INIT_ATTEMPTS})...")
                 sys.stdout.flush()
-                time.sleep(10 * (attempt + 1)) # Increased sleep time based on common practice
-            else:
-                print("FATAL ERROR: Hail initialization failed after multiple attempts.")
+                time.sleep(10 * (attempt + 1)) 
+            else: # Last attempt failed
+                print("FATAL ERROR: Hail initialization failed with TypeError after all attempts.")
+                sys.stdout.flush()
+                sys.exit(1)
+    
+        except Exception as e: # Generic catch for other errors (like IllegalArgumentException on retries)
+            import traceback # Import here to keep it local to the exception handling
+            print(f"Hail initialization FAILED (Attempt {attempt + 1}/{_HAIL_INIT_ATTEMPTS}) with other error: {e}")
+            print("-------------------- FULL TRACEBACK FOR THIS EXCEPTION --------------------")
+            traceback.print_exc() # Print traceback for other errors too for more info
+            print("------------------ END OF TRACEBACK FOR THIS EXCEPTION ------------------")
+            sys.stdout.flush() # console output is flushed
+            sys.stderr.flush() # error output (traceback) is flushed
+            if attempt < _HAIL_INIT_ATTEMPTS - 1: # Check if more retries are allowed
+                print(f"Retrying Hail initialization after other error (attempt {attempt + 2} of {_HAIL_INIT_ATTEMPTS})...")
+                sys.stdout.flush()
+                time.sleep(10 * (attempt + 1))
+            else: # Last attempt failed
+                print("FATAL ERROR: Hail initialization failed after all attempts (generic exception).")
                 sys.stdout.flush()
                 sys.exit(1)
 
