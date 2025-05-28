@@ -14,6 +14,11 @@ Stop a run:
 pkill -f bankpipes
 ```
 
+Stop everything:
+```
+pkill -f -i hail; pkill -f -i spark; pkill -9 -f -i hail; pkill -9 -f -i spark; pkill -f "java.*hail"; pkill -f "java.*spark"; pkill -9 -f "java.*hail"; pkill -9 -f "java.*spark"; pkill -f "python.*hail"; pkill -f "python.*spark"; pkill -9 -f "python.*hail"; pkill -9 -f "python.*spark"
+```
+
 The following env vars are available:
 * SHELL
 * NV_LIBCUBLAS_VERSION
