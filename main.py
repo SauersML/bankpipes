@@ -273,7 +273,7 @@ def main(cfg: Config) -> None:
                 "--output_final_score_csv_gcs_path", csv_gcs,
                 "--google_billing_project", cfg.env["GOOGLE_PROJECT"],
             ],
-            env, logs["analyze"], f"{m_id}:analyze"
+            effective_env, logs["proc"], f"{m_id}:process"
         )
         if rc1:
             log.error("%s failed (processing)", m_id)
@@ -294,7 +294,7 @@ def main(cfg: Config) -> None:
                 "--google_billing_project", cfg.env["GOOGLE_PROJECT"],
                 "--output_summary_file_name", f"{m_id}_summary.txt"
             ],
-            env, logs["anal"], f"{m_id}:analyze"
+            effective_env, logs["analyze"], f"{m_id}:analyze"
         )
         if rc2:
             log.error("%s failed (analysis)", m_id)
