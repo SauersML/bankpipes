@@ -553,12 +553,6 @@ def main():
     parser.add_argument('--output_final_hail_table_gcs_path', required=True, help="GCS output path for the final scores Hail Table.")
     parser.add_argument('--output_final_score_csv_gcs_path',    required=True, help="GCS output path for the final scores CSV.")
     parser.add_argument('--google_billing_project',       required=True, help="Google Cloud Project ID for billing and GCS access.")
-    parser.add_argument(
-        "--hail_cluster_mode", 
-        choices=["local", "dataproc_yarn"], 
-        default="local", 
-        help="Hail execution mode: 'local' for local Spark, 'dataproc_yarn' for running on a Dataproc YARN cluster."
-    )
     args = parser.parse_args()
 
     prs_id = args.prs_id
@@ -570,8 +564,7 @@ def main():
     fs = get_gcs_fs(project_id_for_billing=args.google_billing_project)
     init_hail(
         gcs_hail_temp_dir=args.gcs_hail_temp_dir,
-        log_suffix=f"{args.run_timestamp}_{prs_id}", # Using run_timestamp and prs_id for specific log name
-        cluster_mode=args.hail_cluster_mode # Pass the cluster mode to Hail initialization
+        log_suffix=f"{args.run_timestamp}_{prs_id}" # Using run_timestamp and prs_id for specific log name
     )
     # Set a default number of partitions for Hail operations.
     dynamic_partitions = max(200, hl.spark_context().defaultParallelism * 4)

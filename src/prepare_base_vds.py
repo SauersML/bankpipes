@@ -30,12 +30,6 @@ def parse_args():
     parser.add_argument("--n_cases_downsample", type=int, default=500, help="Target number of cases for downsampling (if enabled).")
     parser.add_argument("--n_controls_downsample", type=int, default=500, help="Target number of controls for downsampling (if enabled).")
     parser.add_argument("--downsampling_random_state", type=int, default=2025, help="Random state seed for reproducible downsampling (if enabled).")
-    parser.add_argument(
-        "--hail_cluster_mode", 
-        choices=["local", "dataproc_yarn"], 
-        default="local", 
-        help="Hail execution mode: 'local' for local Spark, 'dataproc_yarn' for running on a Dataproc YARN cluster."
-    )
     return parser.parse_args()
 
 # --- VDS Preparation Functions ---
@@ -297,8 +291,7 @@ def main():
     fs = get_gcs_fs(project_id_for_billing=args.google_billing_project)
     init_hail(
         gcs_hail_temp_dir=args.gcs_hail_temp_dir,
-        log_suffix=args.run_timestamp, # Using run_timestamp as the log suffix for this script
-        cluster_mode=args.hail_cluster_mode # Pass the cluster mode to Hail initialization
+        log_suffix=args.run_timestamp # Using run_timestamp as the log suffix for this script
     )
     # Set a default number of partitions for Hail operations to improve GCS I/O and prevent too many small files.
     # This value scales with the available Spark cores to remain efficient on both small and large clusters.
