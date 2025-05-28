@@ -104,11 +104,23 @@ def _run_subprocess(cmd: list[str], env: dict[str, str], log_path: Path, step: s
             log.error("Could not read %s for error output.", log_path)
     return rc
 
-def _build_env(base_py: str, script_dir: Path) -> dict[str, str]:
-    """Return env dict for child scripts."""
+def _build_env(script_dir: Path) -> dict[str, str]:
+    """Return env dict for child scripts.
+    """
     env = os.environ.copy()
-    env["PYSPARK_PYTHON"] = base_py
-    env["PYTHONPATH"] = f"{script_dir/'src'}{os.pathsep}{env.get('PYTHONPATH','')}"
+    
+    # Prepend the 'src' directory of the pipeline to PYTHONPATH.
+    # This allows scripts within 'src/' to import other modules from 'src/' 
+    # (e.g., 'from utils import ...'), and for main.py to correctly resolve 
+    # paths when calling scripts like 'src/prepare_base_vds.py'.
+    current_python_path = env.get('PYTHONPATH', '')
+    project_src_path = str(script_dir / 'src')
+    
+    path_parts = current_python_path.split(os.pathsep)
+    if project_src_path not in path_parts:
+        effective_python_path_elements = [part for part in [project_src_path, current_python_path] if part]
+        env["PYTHONPATH"] = os.pathsep.join(effective_python_path_elements)
+    
     return env
 
 
@@ -151,7 +163,7 @@ def main(cfg: Config) -> None:
     log_dir = work_dir / "logs"
     work_dir.mkdir(exist_ok=True)
     log_dir.mkdir(exist_ok=True)
-    env = _build_env(PYTHON_EXECUTABLE, cfg.script_dir) # env is built here
+    env = _build_env() # env is built here
 
     # ┌──────────────────────────────────────────────────────────────────────────────┐
     # │ Step 0 - Compatible Dependencies (PySpark, nest-asyncio)                     │
