@@ -375,7 +375,6 @@ def main():
         
         # This section for filtering by exclusion list and then by target cohort
         # needs to result in 'cleaned_vds' and 'final_ids_for_vds_df' for the next steps.
-        # The user's provided code implies these variables are formed correctly before the VDS construction.
         print("Starting process to filter VDS by exclusion list...")
         initial_vds_sample_count = -1
         try:
@@ -389,8 +388,15 @@ def main():
             excluded_ht, 
             id_column_name='sample_id' 
         )
-        cleaned_vds = cleaned_vds.persist('MEMORY_AND_DISK')
-        print("INFO: Persisted cleaned_vds to memory and disk.")
+        if cleaned_vds is not None: # Check if cleaned_vds was successfully created
+            print("INFO: Persisting components of cleaned_vds to memory and disk.")
+            cleaned_vds = hl.vds.VariantDataset(
+                cleaned_vds.reference_data.persist('MEMORY_AND_DISK'),
+                cleaned_vds.variant_data.persist('MEMORY_AND_DISK')
+            )
+        else:
+            # This case should ideally not be hit if filter_samples_by_exclusion_list is robust
+            print("WARNING: cleaned_vds is None before attempting component persistence. Skipping persistence for cleaned_vds.")
         del full_vds, excluded_ht
 
         # Logic to define final_ids_for_vds_df (either from WGS+EHR or downsampling)
@@ -483,12 +489,28 @@ def main():
         )
         current_base_vds = hl.vds.VariantDataset(rd_target_cohort_filtered, vd_target_cohort_filtered)
         
-        current_base_vds = current_base_vds.persist('MEMORY_AND_DISK')
-        print("INFO: Persisted current_base_vds to memory and disk.")
+        if current_base_vds is not None: # Check if current_base_vds was successfully created
+            print("INFO: Persisting components of current_base_vds to memory and disk.")
+            current_base_vds = hl.vds.VariantDataset(
+                current_base_vds.reference_data.persist('MEMORY_AND_DISK'),
+                current_base_vds.variant_data.persist('MEMORY_AND_DISK')
+            )
+        else:
+            # This case implies vd_target_cohort_filtered or rd_target_cohort_filtered might have been None or problematic
+            print("WARNING: current_base_vds is None before attempting component persistence. Skipping persistence for current_base_vds.")
 
-        if 'cleaned_vds' in locals() and hasattr(cleaned_vds, 'unpersist'):
-            print("INFO: Unpersisting cleaned_vds.")
-            cleaned_vds.unpersist()
+        if 'cleaned_vds' in locals() and cleaned_vds is not None:
+            print("INFO: Unpersisting components of cleaned_vds.")
+            # Check if components exist and have unpersist method before calling
+            if hasattr(cleaned_vds, 'reference_data') and hasattr(cleaned_vds.reference_data, 'unpersist'):
+                cleaned_vds.reference_data.unpersist()
+            else:
+                print("WARNING: cleaned_vds.reference_data either does not exist or cannot be unpersisted.")
+            
+            if hasattr(cleaned_vds, 'variant_data') and hasattr(cleaned_vds.variant_data, 'unpersist'):
+                cleaned_vds.variant_data.unpersist()
+            else:
+                print("WARNING: cleaned_vds.variant_data either does not exist or cannot be unpersisted.")
         del cleaned_vds, target_samples_ht, vd_target_cohort_filtered, rd_target_cohort_filtered
 
         num_samples_in_vds = current_base_vds.variant_data.count_cols() # Action
@@ -548,9 +570,10 @@ def main():
             del vds_check
         except Exception as e:
             print(f"ERROR: Failed to write or verify final OPTIMIZED Base Cohort VDS checkpoint: {e}")
+
             sys.exit(1) 
 
-        print("--- Base VDS Generation (Optimized) Finished ---") # This print is from user feedback
+        print("--- Base VDS Generation (Optimized) Finished ---")
         base_cohort_vds = vds_final_optimized # Assign the successfully generated VDS
 
     if base_cohort_vds is None: # Should not happen if generation was successful
