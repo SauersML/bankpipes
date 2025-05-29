@@ -41,19 +41,14 @@ def load_full_vds(path: str, fs_gcs) -> hl.vds.VariantDataset:
         # Hail's read_vds uses its own GCS connector configuration.
         vds = hl.vds.read_vds(path)
         
-        # Perform a lightweight check to ensure the VDS is readable and has columns.
-        # .cols().take(1) is much cheaper than .count_cols() on a large VDS.
-        # It returns a list; an empty list means no columns (samples).
         if not vds.variant_data.cols().take(1):
             print(f"FATAL ERROR: Loaded VDS from {path} appears to have 0 samples (based on initial .cols().take(1) check).")
             sys.exit(1)
 
         print("VDS successfully loaded (initial column presence check passed).")
-        # The full n_samples count will be expensive on the raw VDS. 
         print(f"Initial VDS variant_data n_partitions: {vds.variant_data.n_partitions()}")
         print(f"Initial VDS reference_data n_partitions: {vds.reference_data.n_partitions()}")
         try:
-            # Log the entry schema of the variant_data component to understand its structure
             print(f"Initial VDS variant_data entry schema: {vds.variant_data.entry.dtype}\n")
         except Exception as schema_e:
             print(f"Could not retrieve VDS variant_data entry schema: {schema_e}\n")
@@ -68,7 +63,7 @@ def load_full_vds(path: str, fs_gcs) -> hl.vds.VariantDataset:
 def load_excluded_samples_ht(path: str, flagged_samples_gcs_path_default: str, fs_gcs) -> hl.Table | None:
     """Loads the table of flagged/excluded samples, returning None if not found or on error."""
     print(f"Importing flagged (related or excluded) samples from: {path}")
-    if not gcs_path_exists(path): # Uses utils.gcs_path_exists
+    if not gcs_path_exists(path): 
         error_message = f"ERROR: Flagged samples file not found or accessible at {path}. "
         if path == flagged_samples_gcs_path_default:
             error_message += "This is the default All of Us path. The file might have moved or permissions changed."
@@ -78,7 +73,6 @@ def load_excluded_samples_ht(path: str, flagged_samples_gcs_path_default: str, f
         print("CRITICAL INFO: Proceeding without relatedness/flagged sample filtering. This may impact analysis results.")
         return None
     try:
-        # Impute types and set sample_id as key
         ht = hl.import_table(path, key='sample_id', impute=True)
         count = ht.count()
         print(f"Flagged samples loaded. Count: {count}\n")
@@ -90,55 +84,96 @@ def load_excluded_samples_ht(path: str, flagged_samples_gcs_path_default: str, f
         print("Proceeding without relatedness filtering due to load error.")
         return None
 
-def filter_samples_by_exclusion_list(vds: hl.vds.VariantDataset, excluded_ht: hl.Table | None) -> hl.vds.VariantDataset:
-    """Filters samples present in the excluded_ht from the VDS."""
+def filter_samples_by_exclusion_list(
+    vds: hl.vds.VariantDataset, 
+    excluded_ht: hl.Table | None, 
+    id_column_name: str = 'sample_id'
+) -> hl.vds.VariantDataset:
+    print(f"[FILTER_EXCLUSION] Starting sample filtering. Initial VDS variant_data sample count: {vds.variant_data.count_cols()}.") # Action
+    
     if excluded_ht is None:
-        print("Skipping relatedness/flagged sample filtering as excluded table is not available.")
-        return vds # Return the original VDS if no exclusion list
+        print("[FILTER_EXCLUSION] Exclusion table is None. Returning original VDS.")
+        return vds
 
-    print("Filtering flagged samples out of the VDS...")
+    initial_excluded_count = excluded_ht.count() # Action
+    print(f"[FILTER_EXCLUSION] Exclusion table received with {initial_excluded_count} entries.")
+    if initial_excluded_count == 0:
+        print("[FILTER_EXCLUSION] Exclusion table is empty. Returning original VDS.")
+        return vds
+
+    if id_column_name not in excluded_ht.row:
+        msg = f"[FILTER_EXCLUSION] ERROR: ID column '{id_column_name}' not found in exclusion table. Columns: {list(excluded_ht.row.keys())}"
+        print(msg)
+        raise ValueError(msg)
+
+    print(f"[FILTER_EXCLUSION] Preparing exclusion table. Original key: {list(excluded_ht.key.keys()) if excluded_ht.key is not None else 'None'}, target ID field for rekey: '{id_column_name}'.")
+    
+    temp_s_col = '_s_to_key_' # temp column name for string conversion
+    
+    if id_column_name == 's' and excluded_ht[id_column_name].dtype == hl.tstr:
+        excluded_ht_rekeyed = excluded_ht.key_by('s')
+        print(f"[FILTER_EXCLUSION] Exclusion table already has 's' key of type string.")
+    elif id_column_name != 's' and excluded_ht[id_column_name].dtype == hl.tstr:
+        excluded_ht_rekeyed = excluded_ht.key_by(id_column_name).rename({id_column_name: 's'})
+        print(f"[FILTER_EXCLUSION] Exclusion table keyed by '{id_column_name}' (string) and key column renamed to 's'.")
+    else: 
+        print(f"[FILTER_EXCLUSION] Exclusion table field '{id_column_name}' (type {excluded_ht[id_column_name].dtype}) needs conversion/rekeying.")
+        excluded_ht_rekeyed = excluded_ht.annotate(**{temp_s_col: hl.str(excluded_ht[id_column_name])})
+        excluded_ht_rekeyed = excluded_ht_rekeyed.key_by(temp_s_col).rename({temp_s_col: 's'})
+        print(f"[FILTER_EXCLUSION] Exclusion table converted to string, keyed by and key column renamed to 's'.")
+
+    print(f"[FILTER_EXCLUSION] Schema of re-keyed exclusion table: {excluded_ht_rekeyed.row.dtype}, Key: {list(excluded_ht_rekeyed.key.keys())}")
+    
+    print(f"[FILTER_EXCLUSION] Persisting re-keyed exclusion table...")
     try:
-        n_before = vds.variant_data.count_cols()
-        # the excluded table is keyed by 's' (string) to match VDS sample ID
-        if 's' not in excluded_ht.key.dtype:
-            print("Re-keying excluded_ht from 'sample_id' to 's' (string type).")
-            # Assumes original key was 'sample_id'. Cast to string for safety.
-            excluded_ht = excluded_ht.annotate(s=hl.str(excluded_ht.sample_id)).key_by('s')
-        
-        # Filter cols (samples) in both variant and reference data using anti-join logic
-        cleaned_variant_data = vds.variant_data.filter_cols(
-            hl.is_missing(excluded_ht[vds.variant_data.s])
-        )
-        cleaned_ref_data = vds.reference_data.filter_cols(
-            hl.is_missing(excluded_ht[vds.reference_data.s])
-        )
-        
-        # Create the new VDS with filtered data
-        cleaned_vds = hl.vds.VariantDataset(cleaned_ref_data, cleaned_variant_data)
-        n_after = cleaned_vds.variant_data.count_cols()
-        print(f"Samples filtered. Count before: {n_before}, Count after: {n_after}. Removed: {n_before - n_after}\n")
-        
-        if n_after == 0:
-            print("FATAL ERROR: Filtering removed all samples from the VDS.")
-            sys.exit(1)
-        return cleaned_vds
+        excluded_ht_rekeyed = excluded_ht_rekeyed.persist()
+        count_after_persist = excluded_ht_rekeyed.count() # Action
+        print(f"[FILTER_EXCLUSION] Re-keyed exclusion table persisted. Count: {count_after_persist}.")
+        if initial_excluded_count != count_after_persist:
+            print(f"[FILTER_EXCLUSION] WARNING: Count mismatch after persist. Before: {initial_excluded_count}, After: {count_after_persist}")
     except Exception as e:
-        print(f"ERROR: Failed during sample filtering by exclusion list: {e}")
-        print("Exiting due to failure during sample filtering.")
-        sys.exit(1)
+        print(f"[FILTER_EXCLUSION] ERROR during persist: {e}. Continuing without persisted table.")
 
-# Use local caching for the expensive BQ query to get WGS+EHR sample list
-@cache_result("wgs_ehr_samples_df") # Decorator from utils for local pickle cache
+    vd_initial_cols = vds.variant_data.count_cols() # Action
+    print(f"[FILTER_EXCLUSION] Filtering variant_data (samples: {vd_initial_cols}, partitions: {vds.variant_data.n_partitions()})...")
+    try:
+        if vds.variant_data.s.dtype != hl.tstr:
+            print(f"[FILTER_EXCLUSION] WARNING: VDS variant_data 's' column is not string ({vds.variant_data.s.dtype}). This might cause issues if exclusion keys are strings.")
+        filtered_variant_data = vds.variant_data.filter_cols(hl.is_missing(excluded_ht_rekeyed[vds.variant_data.s]))
+        vd_cols_after_filter = filtered_variant_data.count_cols() # Action
+        print(f"[FILTER_EXCLUSION] Variant_data filtered. Samples remaining: {vd_cols_after_filter}. Partitions: {filtered_variant_data.n_partitions()}.")
+    except Exception as e:
+        print(f"[FILTER_EXCLUSION] ERROR filtering variant_data: {e}")
+        raise
+
+    rd_initial_cols = vds.reference_data.count_cols() # Action
+    print(f"[FILTER_EXCLUSION] Filtering reference_data (samples: {rd_initial_cols}, partitions: {vds.reference_data.n_partitions()})...")
+    try:
+        if vds.reference_data.s.dtype != hl.tstr:
+             print(f"[FILTER_EXCLUSION] WARNING: VDS reference_data 's' column is not string ({vds.reference_data.s.dtype}).")
+        filtered_reference_data = vds.reference_data.filter_cols(hl.is_missing(excluded_ht_rekeyed[vds.reference_data.s]))
+        rd_cols_after_filter = filtered_reference_data.count_cols() # Action
+        print(f"[FILTER_EXCLUSION] Reference_data filtered. Samples remaining: {rd_cols_after_filter}. Partitions: {filtered_reference_data.n_partitions()}.")
+    except Exception as e:
+        print(f"[FILTER_EXCLUSION] ERROR filtering reference_data: {e}")
+        raise
+
+    if vd_cols_after_filter != rd_cols_after_filter:
+        print(f"[FILTER_EXCLUSION] WARNING: Sample count mismatch after filtering! Variant data: {vd_cols_after_filter}, Reference data: {rd_cols_after_filter}")
+
+    print("[FILTER_EXCLUSION] Creating new VariantDataset...")
+    new_vds = hl.vds.VariantDataset(filtered_reference_data, filtered_variant_data)
+    print(f"[FILTER_EXCLUSION] New VariantDataset created. Final sample count (from variant_data): {vd_cols_after_filter}.")
+    return new_vds
+
+@cache_result("wgs_ehr_samples_df") 
 def get_wgs_ehr_samples_df(cdr_env_var_value: str, prs_id=None) -> pd.DataFrame:
-    """Fetches person_ids with both WGS and EHR data from BigQuery."""
-    get_cache_dir() # local cache directory exists
+    get_cache_dir() 
     print("Retrieving WGS+EHR samples from BigQuery...")
     if not cdr_env_var_value:
         print(f"FATAL ERROR: Workspace CDR value not provided.")
         sys.exit(1)
 
-    # This query identifies participants present in the WGS data release
-    # who also have corresponding EHR data linked.
     wgs_ehr_query = f"""
     SELECT person_id
     FROM `{cdr_env_var_value}.person`
@@ -151,7 +186,6 @@ def get_wgs_ehr_samples_df(cdr_env_var_value: str, prs_id=None) -> pd.DataFrame:
     """
     print("Executing BQ query for WGS+EHR samples.")
     try:
-        # BigQuery client is configured (ADC, billing project)
         df = pd.read_gbq(wgs_ehr_query, dialect='standard', progress_bar_type=None)
         n_found = df['person_id'].nunique()
         print(f"WGS+EHR query completed. Found {n_found} unique persons.\n")
@@ -164,7 +198,6 @@ def get_wgs_ehr_samples_df(cdr_env_var_value: str, prs_id=None) -> pd.DataFrame:
         sys.exit(1)
 
 def save_sample_ids_to_gcs(df: pd.DataFrame, gcs_path: str, fs_gcs):
-    """Saves the DataFrame of sample IDs (expected 'person_id' column) to GCS."""
     if df is None or df.empty:
         print("FATAL ERROR: Cannot save sample IDs DataFrame as it is None or empty.")
         sys.exit(1)
@@ -174,14 +207,12 @@ def save_sample_ids_to_gcs(df: pd.DataFrame, gcs_path: str, fs_gcs):
 
     print(f"Storing sample IDs (column: 'person_id') to GCS: {gcs_path}")
     try:
-        # parent directory exists
         parent_dir = os.path.dirname(gcs_path)
         if not gcs_path_exists(parent_dir):
              print(f"Creating GCS directory: {parent_dir}")
              fs_gcs.mkdirs(parent_dir, exist_ok=True)
              
         with fs_gcs.open(gcs_path, 'w') as f:
-            # Save only the person_id column with header
             df[['person_id']].to_csv(f, index=False)
         print("Sample IDs saved successfully.\n")
     except Exception as e:
@@ -189,7 +220,6 @@ def save_sample_ids_to_gcs(df: pd.DataFrame, gcs_path: str, fs_gcs):
         sys.exit(1)
 
 def filter_vds_to_sample_list(vds: hl.vds.VariantDataset, sample_ids_gcs_path: str, fs_gcs) -> hl.vds.VariantDataset:
-    """Filters the VDS to include only samples present in the provided CSV list on GCS."""
     if vds is None:
         print("FATAL ERROR: VDS is None, cannot filter to sample list.")
         sys.exit(1)
@@ -203,16 +233,12 @@ def filter_vds_to_sample_list(vds: hl.vds.VariantDataset, sample_ids_gcs_path: s
             print(f"FATAL ERROR: Sample IDs file not found at {sample_ids_gcs_path}")
             sys.exit(1)
 
-        # Import the list into a HailTable, assuming 'person_id' header
         ids_ht = hl.import_table(sample_ids_gcs_path, delimiter=',', key='person_id', types={'person_id': hl.tstr})
         
-        # Check if the table is empty after import
         if ids_ht.count() == 0:
             print(f"FATAL ERROR: Imported sample ID HailTable from {sample_ids_gcs_path} is empty. Cannot filter VDS.")
             sys.exit(1)
 
-        # VDS sample key 's' is string type if not already
-        # This modifies the VDS object in place if needed
         vds_variant_data = vds.variant_data
         vds_reference_data = vds.reference_data
         keys_cast = False
@@ -227,10 +253,8 @@ def filter_vds_to_sample_list(vds: hl.vds.VariantDataset, sample_ids_gcs_path: s
         if keys_cast:
              vds = hl.vds.VariantDataset(vds_reference_data, vds_variant_data)
 
-        # Key the HT by 's' to match the VDS sample ID column name
         ids_ht_keyed = ids_ht.key_by(s=ids_ht.person_id)
 
-        # Perform the filtering using semi_join on cols (keeps samples present in ids_ht_keyed)
         print("Filtering VDS variant_data to sample list...")
         filtered_variant_data = vds.variant_data.semi_join_cols(ids_ht_keyed)
         print("Filtering VDS reference_data to sample list...")
@@ -238,7 +262,6 @@ def filter_vds_to_sample_list(vds: hl.vds.VariantDataset, sample_ids_gcs_path: s
 
         subset_vds = hl.vds.VariantDataset(filtered_reference_data, filtered_variant_data)
 
-        # Verify outcome
         n_after_filter = subset_vds.variant_data.count_cols()
         print(f"VDS filtered to sample list. Final count: {n_after_filter}\n")
         if n_after_filter == 0:
@@ -250,7 +273,6 @@ def filter_vds_to_sample_list(vds: hl.vds.VariantDataset, sample_ids_gcs_path: s
         sys.exit(1)
 
 def load_phenotype_cases_from_csv(gcs_path: str, fs_gcs) -> pd.DataFrame:
-    """Loads the phenotype case definitions from the specified GCS CSV file."""
     print(f"Loading phenotype case data from CSV: {gcs_path}")
     if not gcs_path_exists(gcs_path):
         print(f"FATAL ERROR: Phenotype cases CSV file not found at {gcs_path}")
@@ -259,18 +281,15 @@ def load_phenotype_cases_from_csv(gcs_path: str, fs_gcs) -> pd.DataFrame:
         with fs_gcs.open(gcs_path, 'r') as f:
             df = pd.read_csv(f)
         
-        # Validate required columns
         required_cols = ['s', 'phenotype_status']
         if not all(col in df.columns for col in required_cols):
              print(f"FATAL ERROR: Phenotype cases CSV {gcs_path} must contain columns: {required_cols}. Found: {df.columns.tolist()}")
              sys.exit(1)
              
-        # correct types
         df['s'] = df['s'].astype(str)
         df['phenotype_status'] = df['phenotype_status'].astype(int)
         
         print(f"Successfully loaded {len(df)} entries from phenotype cases CSV.")
-        # Filter to only actual cases defined in the file (status == 1)
         cases_df = df[df['phenotype_status'] == 1].copy()
         print(f"Identified {len(cases_df)} cases from the CSV.")
         return cases_df
@@ -283,114 +302,127 @@ def load_phenotype_cases_from_csv(gcs_path: str, fs_gcs) -> pd.DataFrame:
 
 def main():
     args = parse_args()
-    # local cache directory exists for functions using @cache_result
     get_cache_dir() 
 
-    # Initialize GCS FileSystem and Hail
-    # Explicitly pass billing project to GCSFileSystem initialization
     fs = get_gcs_fs(project_id_for_billing=args.google_billing_project)
     init_hail(
         gcs_hail_temp_dir=args.gcs_hail_temp_dir,
-        log_suffix=args.run_timestamp # Using run_timestamp as the log suffix for this script
+        log_suffix=args.run_timestamp 
     )
-    # Set a default number of partitions for Hail operations to improve GCS I/O and prevent too many small files.
-    # This value scales with the available Spark cores to remain efficient on both small and large clusters.
     dynamic_partitions = max(200, hl.spark_context().defaultParallelism * 4)
-    # Set Hail's default partition count in a way that is compatible across versions.
     try:
         hl.default_n_partitions(dynamic_partitions)
     except AttributeError:
         if hasattr(hl, "set_default_n_partitions"):
             hl.set_default_n_partitions(dynamic_partitions)
 
-    base_cohort_vds = None # Initialize VDS variable
+    base_cohort_vds = None 
 
-    # --- Check for Existing VDS Checkpoint ---
-    # Uses the specified output path as the checkpoint location
-    if hail_path_exists(args.base_cohort_vds_path_out): # Uses utils.hail_path_exists
+    if hail_path_exists(args.base_cohort_vds_path_out): 
         print(f"[CHECKPOINT] Found potential Base Cohort VDS directory at: {args.base_cohort_vds_path_out}")
         try:
             print("Attempting to read VDS checkpoint...")
             base_cohort_vds = hl.vds.read_vds(args.base_cohort_vds_path_out)
-            # Perform a quick verification count
             n_samples = base_cohort_vds.variant_data.count_cols()
             n_variants = base_cohort_vds.variant_data.count_rows()
             print(f"Sanity check on loaded VDS: Found {n_samples} samples and {n_variants} variants.")
-            if n_samples > 0: # Only need samples for this VDS to be useful
+            if n_samples > 0: 
                 print("[CHECKPOINT HIT] Successfully loaded and verified VDS checkpoint.\n")
             else:
                 print("[CHECKPOINT CORRUPTED] Loaded VDS has 0 samples. Assuming invalid.")
-                base_cohort_vds = None # Force regeneration
-                # Attempt to delete the corrupted checkpoint directory
-                if not delete_gcs_path(args.base_cohort_vds_path_out, recursive=True): # Uses utils.delete_gcs_path
+                base_cohort_vds = None 
+                if not delete_gcs_path(args.base_cohort_vds_path_out, recursive=True): 
                      print(f"WARNING: Failed to delete corrupted VDS checkpoint at {args.base_cohort_vds_path_out}")
         except Exception as e:
             error_message = str(e)
             print(f"[CHECKPOINT CORRUPTED] Failed to read VDS from {args.base_cohort_vds_path_out}. Error: {error_message}")
-            # Be specific about corruption errors vs other issues
             if "corrupted" in error_message.lower() or "metadata.json.gz is missing" in error_message or "Not a VDS" in error_message:
                 print("Error suggests checkpoint corruption. Attempting deletion and regeneration...")
-                base_cohort_vds = None # Force regeneration
+                base_cohort_vds = None 
                 if not delete_gcs_path(args.base_cohort_vds_path_out, recursive=True):
                      print(f"WARNING: Failed to delete corrupted VDS checkpoint at {args.base_cohort_vds_path_out}")
             else:
-                # For other errors (permissions, network), exit rather than deleting potentially good data
                 print("Error reading VDS checkpoint was not identified as typical corruption. Exiting to investigate.")
                 sys.exit(1)
 
-    # --- Regenerate VDS if Checkpoint Loading Failed or VDS is None ---
     if base_cohort_vds is None:
         print(f"[CHECKPOINT MISS or CORRUPTED] Base Cohort VDS needs to be generated at {args.base_cohort_vds_path_out}.")
         print("--- Starting Base VDS Generation ---")
 
-        # 1. Load Full VDS
         full_vds = load_full_vds(args.wgs_vds_path, fs)
+        excluded_ht = load_excluded_samples_ht(args.flagged_samples_gcs_path, args.flagged_samples_gcs_path, fs)
 
-        # 2. Load Excluded Samples List
-        excluded_ht = load_excluded_samples_ht(args.flagged_samples_gcs_path, args.flagged_samples_gcs_path, fs) # Pass default path for comparison message
+        print("Starting process to filter VDS by exclusion list...")
+        initial_vds_sample_count = -1
+        try:
+            initial_vds_sample_count = full_vds.variant_data.count_cols() # Action
+            print(f"Full VDS sample count before exclusion filter: {initial_vds_sample_count}")
+        except Exception as e:
+            print(f"ERROR: Could not get initial VDS sample count: {e}")
+        
+        excluded_ht_count = -1
+        if excluded_ht is not None:
+            try:
+                excluded_ht_count = excluded_ht.count() # Action
+                print(f"Exclusion table sample count: {excluded_ht_count}")
+            except Exception as e:
+                print(f"ERROR: Could not get exclusion table count: {e}")
 
-        # 3. Filter Excluded Samples from VDS
-        cleaned_vds = filter_samples_by_exclusion_list(full_vds, excluded_ht)
-        del full_vds, excluded_ht # Free memory
+        try:
+            cleaned_vds = filter_samples_by_exclusion_list(
+                full_vds, 
+                excluded_ht, 
+                id_column_name='sample_id' 
+            )
+            
+            final_filtered_count = -1
+            try:
+                final_filtered_count = cleaned_vds.variant_data.count_cols() # Action
+                print(f"Successfully filtered VDS by exclusion list. Samples remaining: {final_filtered_count}")
+            except Exception as e:
+                print(f"ERROR: Could not get final VDS sample count after filter: {e}")
 
-        # 4. Get the list of all individuals with WGS and EHR data (uses local cache)
+            if initial_vds_sample_count != -1 and final_filtered_count != -1 and excluded_ht_count > 0 and final_filtered_count == initial_vds_sample_count:
+                 print("WARNING: No samples appear to have been removed by the exclusion filter, despite having an exclusion list. Check list content and ID formats.")
+            elif excluded_ht_count == 0 or excluded_ht is None:
+                 print("No exclusion list provided or it was empty; sample count unchanged by this specific filter step.")
+
+        except Exception as e:
+            print(f"CRITICAL ERROR: Failed during sample filtering by exclusion list function call: {e}")
+            print(f"Details at call site: Initial VDS samples: {initial_vds_sample_count}, Exclusion HT samples: {excluded_ht_count}")
+            print("Exiting due to critical failure during sample filtering step.")
+            sys.exit(1) 
+        
+        del full_vds, excluded_ht
+
         all_wgs_ehr_individuals_df = get_wgs_ehr_samples_df(args.workspace_cdr)
-        # Prepare this DataFrame for potential merging: rename 'person_id' to 's', string type
         all_wgs_ehr_individuals_df = all_wgs_ehr_individuals_df.rename(columns={'person_id': 's'})
         all_wgs_ehr_individuals_df['s'] = all_wgs_ehr_individuals_df['s'].astype(str)
 
-        # 5. Determine the final list of sample IDs to keep in the VDS
-        final_ids_for_vds_df = None # DataFrame with 's' column
+        final_ids_for_vds_df = None 
         
         if args.enable_downsampling_for_vds:
             print(f"--- Downsampling enabled for VDS generation ---")
             print(f"Target: ~{args.n_cases_downsample} cases / ~{args.n_controls_downsample} controls for phenotype '{args.target_phenotype_name}'")
             
-            # Load phenotype case definitions from the upstream step's output CSV
             phenotype_cases_df = load_phenotype_cases_from_csv(args.phenotype_cases_gcs_path_input, fs)
-            # phenotype_cases_df contains 's' and 'phenotype_status' (where status is 1)
 
-            # Define cases and controls *within the WGS+EHR cohort*
-            # Merge the full WGS+EHR list with the loaded cases
             merged_cohort_phenotype_df = pd.merge(
-                all_wgs_ehr_individuals_df[['s']], # Start with all WGS+EHR individuals
-                phenotype_cases_df[['s', 'phenotype_status']], # Bring in case status
+                all_wgs_ehr_individuals_df[['s']], 
+                phenotype_cases_df[['s', 'phenotype_status']], 
                 on='s',
-                how='left' # Keep all WGS+EHR individuals
+                how='left' 
             )
-            # Fill NA status (meaning not a case) with 0 (control)
             merged_cohort_phenotype_df['phenotype_status'] = merged_cohort_phenotype_df['phenotype_status'].fillna(0).astype(int)
             
             print(f"Total WGS+EHR individuals available for downsampling: {len(merged_cohort_phenotype_df)}")
             print(f"Phenotype distribution within WGS+EHR cohort:\n{merged_cohort_phenotype_df['phenotype_status'].value_counts(dropna=False)}")
 
-            # Separate cases and controls from the merged cohort
             cases_in_cohort_df = merged_cohort_phenotype_df[merged_cohort_phenotype_df['phenotype_status'] == 1]
             controls_in_cohort_df = merged_cohort_phenotype_df[merged_cohort_phenotype_df['phenotype_status'] == 0]
             print(f"Available cases in WGS+EHR cohort: {len(cases_in_cohort_df)}")
             print(f"Available controls in WGS+EHR cohort: {len(controls_in_cohort_df)}")
 
-            # Perform sampling
             num_cases_to_sample = min(args.n_cases_downsample, len(cases_in_cohort_df))
             sampled_cases_df = cases_in_cohort_df.sample(n=num_cases_to_sample, random_state=args.downsampling_random_state, replace=False)
             print(f"Sampled {len(sampled_cases_df)} cases.")
@@ -399,7 +431,6 @@ def main():
             sampled_controls_df = controls_in_cohort_df.sample(n=num_controls_to_sample, random_state=args.downsampling_random_state, replace=False)
             print(f"Sampled {len(sampled_controls_df)} controls.")
 
-            # Combine and get the final list of sample IDs ('s' column)
             final_ids_for_vds_df = pd.concat([sampled_cases_df, sampled_controls_df], ignore_index=True)[['s']]
             final_ids_for_vds_df = final_ids_for_vds_df.drop_duplicates(subset=['s'])
             print(f"Total unique individuals in downsampled cohort for VDS generation: {len(final_ids_for_vds_df)}")
@@ -408,102 +439,116 @@ def main():
                 print("FATAL ERROR: Downsampling resulted in an empty cohort. Check N_cases/N_controls and available data.")
                 sys.exit(1)
             
-            # Clean up intermediate dataframes
             del phenotype_cases_df, merged_cohort_phenotype_df, cases_in_cohort_df, controls_in_cohort_df, sampled_cases_df, sampled_controls_df
-
         else:
-            # If downsampling is not enabled, use all WGS+EHR individuals
             print("--- Using full WGS+EHR cohort for VDS generation (downsampling disabled) ---")
-            final_ids_for_vds_df = all_wgs_ehr_individuals_df[['s']] # Use the 's' column
+            final_ids_for_vds_df = all_wgs_ehr_individuals_df[['s']] 
 
-        # 6. Prepare the final ID list for saving (needs 'person_id' column) and filter the VDS
-        # Rename 's' back to 'person_id' for saving the list
         df_to_save_for_vds_filter = final_ids_for_vds_df.rename(columns={'s': 'person_id'})
-        
-        # Save this definitive list of IDs that will be in the VDS
         save_sample_ids_to_gcs(df_to_save_for_vds_filter, args.wgs_ehr_ids_gcs_path_out, fs) 
         
-        # Filter the VDS using this list (passed via GCS path)
-        base_cohort_vds = filter_vds_to_sample_list(cleaned_vds, args.wgs_ehr_ids_gcs_path_out, fs) 
+        # This is where the script was modified previously based on the main issue description.
+        # The original script used `filter_vds_to_sample_list(cleaned_vds, args.wgs_ehr_ids_gcs_path_out, fs)`
+        # Now, we use the direct filtering logic.
+        
+        print(f"Converting {len(final_ids_for_vds_df)} target sample IDs to HailTable...")
+        target_samples_ht = hl.Table.from_pandas(final_ids_for_vds_df).key_by('s')
 
-        # Clean up intermediate dataframes
-        del all_wgs_ehr_individuals_df, final_ids_for_vds_df, df_to_save_for_vds_filter, cleaned_vds
+        print(f"Filtering VDS (after flagged/related removal) to the {target_samples_ht.count()} target samples...")
+        vd_target_cohort_filtered = cleaned_vds.variant_data.filter_cols(
+            hl.is_defined(target_samples_ht[cleaned_vds.variant_data.s])
+        )
+        rd_target_cohort_filtered = cleaned_vds.reference_data.filter_cols(
+            hl.is_defined(target_samples_ht[cleaned_vds.reference_data.s])
+        )
+        base_cohort_vds = hl.vds.VariantDataset(rd_target_cohort_filtered, vd_target_cohort_filtered) # Assign to base_cohort_vds
+        
+        del cleaned_vds, target_samples_ht, vd_target_cohort_filtered, rd_target_cohort_filtered # Free up memory
+        
+        num_samples_in_vds = base_cohort_vds.variant_data.count_cols()
+        print(f"VDS filtered to target cohort. Samples: {num_samples_in_vds}. Variant_data row partitions: {base_cohort_vds.variant_data.n_partitions()}")
+        if num_samples_in_vds == 0:
+            print("FATAL ERROR: Filtering VDS to target sample list resulted in 0 samples remaining.")
+            sys.exit(1)
+        if num_samples_in_vds != len(final_ids_for_vds_df):
+             print(f"WARNING: Sample count mismatch! Expected {len(final_ids_for_vds_df)} from ID list, got {num_samples_in_vds} in VDS.")
 
-        # 7. Write the Filtered VDS as a Checkpoint
-        print(f"Writing filtered Base Cohort VDS checkpoint to: {args.base_cohort_vds_path_out}")
+        # Optimize reference_data for the Target Cohort VDS and checkpoint
+        MAX_REF_BLOCK_LENGTH = 10000
+        TRUNCATED_VDS_CHECKPOINT_PATH = args.base_cohort_vds_path_out.replace(".vds", "_truncated_checkpoint.vds")
+
+        print(f"Truncating reference blocks to max length {MAX_REF_BLOCK_LENGTH} bp for the target cohort VDS...")
+        vds_truncated_intermediate = hl.vds.truncate_reference_blocks(
+            base_cohort_vds, 
+            max_ref_block_base_pairs=MAX_REF_BLOCK_LENGTH
+        )
+        del base_cohort_vds # Free memory, base_cohort_vds is now vds_truncated_intermediate
+        
+        print(f"Checkpointing truncated VDS to: {TRUNCATED_VDS_CHECKPOINT_PATH}")
         try:
-            # Repartition the VDS to a more manageable number of partitions before writing.
-            # This improves GCS I/O performance for the checkpoint and subsequent reads.
-            # Retrieve the previously configured default partition count in a version-agnostic way.
-            try:
-                target_vds_partitions = hl.default_n_partitions()
-            except AttributeError:
-                if hasattr(hl, "set_default_n_partitions"):
-                    hl.set_default_n_partitions(dynamic_partitions)
-                target_vds_partitions = dynamic_partitions
-            
-            current_variant_partitions = base_cohort_vds.variant_data.n_partitions()
-            current_reference_partitions = base_cohort_vds.reference_data.n_partitions()
+            vds_truncated_intermediate.write(TRUNCATED_VDS_CHECKPOINT_PATH, overwrite=True)
+            print("Reading back checkpointed truncated VDS...")
+            base_cohort_vds = hl.vds.read_vds(TRUNCATED_VDS_CHECKPOINT_PATH) # Assign back to base_cohort_vds
+            del vds_truncated_intermediate 
+        except Exception as e:
+            print(f"ERROR during checkpointing of truncated VDS: {e}")
+            print("Attempting to use non-checkpointed VDS due to checkpoint error. This may be unstable.")
+            base_cohort_vds = vds_truncated_intermediate # Fallback
+            # Consider sys.exit(f"FATAL: Failed to write/read truncated VDS checkpoint. Error: {e}")
 
-            print(f"Current VDS partitions before checkpoint write: variant_data={current_variant_partitions}, reference_data={current_reference_partitions}")
-            
-            # Only repartition if significantly different, to avoid unnecessary shuffles
-            # Heuristic
-            if current_variant_partitions > target_vds_partitions:
-                print(f"Repartitioning VDS to ~{target_vds_partitions} variant_data partitions before writing checkpoint...")
-                # For reference_data, fewer partitions are often sufficient as it's usually smaller or accessed differently.
-                # A fraction of target_vds_partitions, though at least 1.
-                target_ref_partitions = max(1, target_vds_partitions // 10) 
-                
-                # Check if reference data actually needs repartitioning
-                ref_data_repartitioned = base_cohort_vds.reference_data
-                if current_reference_partitions > target_ref_partitions:
-                     print(f"Repartitioning reference_data to {target_ref_partitions} partitions.")
-                     ref_data_repartitioned = base_cohort_vds.reference_data.repartition(target_ref_partitions, shuffle=True)
+        print(f"Reference blocks processed (checkpointed). Resulting VDS variant_data partitions: {base_cohort_vds.variant_data.n_partitions()}, Reference_data partitions: {base_cohort_vds.reference_data.n_partitions()}")
+        
+        # REMOVED GLOBAL REPARTITIONING OF VARIANT_DATA
 
-                print(f"Repartitioning variant_data to {target_vds_partitions} partitions.")
-                variant_data_repartitioned = base_cohort_vds.variant_data.repartition(target_vds_partitions, shuffle=True)
-                
-                base_cohort_vds = hl.vds.VariantDataset(ref_data_repartitioned, variant_data_repartitioned)
-                print(f"VDS repartitioned. New partitions: variant_data={base_cohort_vds.variant_data.n_partitions()}, reference_data={base_cohort_vds.reference_data.n_partitions()}")
-
-            # Overwrite if attempting regeneration due to previous failure
+        print(f"Writing final prepared Base Cohort VDS checkpoint to: {args.base_cohort_vds_path_out}")
+        try:
             base_cohort_vds.write(args.base_cohort_vds_path_out, overwrite=True) 
             print("Base Cohort VDS checkpoint successfully written.")
             
-            # Verify the written checkpoint minimally
             print("Verifying written checkpoint...")
             vds_check = hl.vds.read_vds(args.base_cohort_vds_path_out)
             vds_check_sample_count = vds_check.variant_data.count_cols()
             print(f"Checkpoint verified successfully. Sample count: {vds_check_sample_count}")
-            del vds_check # Clean up verification object
+            if vds_check_sample_count != num_samples_in_vds:
+                 print(f"WARNING: Sample count mismatch in final checkpoint! Expected {num_samples_in_vds}, got {vds_check_sample_count}")
+            del vds_check
         except Exception as e:
-            print(f"ERROR: Failed to write or verify Base Cohort VDS checkpoint: {e}")
-            print("FATAL ERROR: Checkpoint write/verification failed. Deleting potentially incomplete checkpoint.")
-            # Attempt cleanup of the failed write
-            delete_gcs_path(args.base_cohort_vds_path_out, recursive=True) 
+            print(f"ERROR: Failed to write or verify final Base Cohort VDS checkpoint: {e}")
+            if not delete_gcs_path(args.base_cohort_vds_path_out, recursive=True):
+                 print(f"WARNING: Failed to delete VDS checkpoint at {args.base_cohort_vds_path_out} after write/verify failure.")
             sys.exit(1)
             
         print("--- Base VDS Generation Finished ---")
-
-    # --- Final Check and Exit ---
-    # base_cohort_vds is valid before exiting script successfully
+    
+    # Final check on base_cohort_vds before concluding
     if base_cohort_vds is None:
-        # This should only happen if checkpoint existed but failed verification AND regeneration also failed.
-        print(f"FATAL ERROR: base_cohort_vds is None after attempting load/regeneration from {args.base_cohort_vds_path_out}. Cannot proceed.")
+        print(f"FATAL ERROR: base_cohort_vds is None at the end of processing. Cannot proceed.")
         sys.exit(1)
-    else:
-        # Double-check sample count just before exiting
-        final_sample_count = base_cohort_vds.variant_data.count_cols()
-        if final_sample_count == 0:
-            print(f"FATAL ERROR: Final base_cohort_vds at {args.base_cohort_vds_path_out} has 0 samples.")
-            sys.exit(1)
-        print(f"Base Cohort VDS at {args.base_cohort_vds_path_out} is ready with {final_sample_count} samples.\n")
+    
+    final_sample_count = base_cohort_vds.variant_data.count_cols()
+    if final_sample_count == 0:
+        print(f"FATAL ERROR: Final Base Cohort VDS at {args.base_cohort_vds_path_out} has 0 samples.")
+        if gcs_path_exists(args.base_cohort_vds_path_out): # Check if it exists before trying to delete
+            delete_gcs_path(args.base_cohort_vds_path_out, recursive=True)
+        sys.exit(1)
+    print(f"Base Cohort VDS at {args.base_cohort_vds_path_out} is ready with {final_sample_count} samples.\n")
 
-    # If execution reaches here, the VDS exists (either loaded or generated) and the sample ID list is saved.
+    if final_ids_for_vds_df is None or final_ids_for_vds_df.empty:
+        print("FATAL ERROR: final_ids_for_vds_df is not available for saving sample list (should have been populated).")
+        sys.exit(1)
+        
+    df_to_save_ids = final_ids_for_vds_df.rename(columns={'s': 'person_id'})
+    save_sample_ids_to_gcs(df_to_save_ids, args.wgs_ehr_ids_gcs_path_out, fs)
+
+    # Consider cleaning up TRUNCATED_VDS_CHECKPOINT_PATH if it exists and main process was successful
+    # Example: if gcs_path_exists(TRUNCATED_VDS_CHECKPOINT_PATH): 
+    #              delete_gcs_path(TRUNCATED_VDS_CHECKPOINT_PATH, recursive=True)
+
     print(f"Script completed successfully.")
     print(f"Output Base VDS path: {args.base_cohort_vds_path_out}")
     print(f"Output Sample ID list path: {args.wgs_ehr_ids_gcs_path_out}")
 
 if __name__ == "__main__":
     main()
+
+[end of src/prepare_base_vds.py]
