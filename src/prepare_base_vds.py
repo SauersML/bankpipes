@@ -375,7 +375,6 @@ def main():
         
         # This section for filtering by exclusion list and then by target cohort
         # needs to result in 'cleaned_vds' and 'final_ids_for_vds_df' for the next steps.
-        # The user's provided code implies these variables are formed correctly before the VDS construction.
         print("Starting process to filter VDS by exclusion list...")
         initial_vds_sample_count = -1
         try:
@@ -571,16 +570,12 @@ def main():
             del vds_check
         except Exception as e:
             print(f"ERROR: Failed to write or verify final OPTIMIZED Base Cohort VDS checkpoint: {e}")
-            # The user feedback included a more specific delete here, but sys.exit(1) is fine.
-            # if not delete_gcs_path(args.base_cohort_vds_path_out, recursive=True, project_id_for_billing=args.google_billing_project):
-            #      print(f"WARNING: Failed to delete VDS checkpoint at {args.base_cohort_vds_path_out} after write/verify failure.")
+
             sys.exit(1) 
 
-        print("--- Base VDS Generation (Optimized) Finished ---") # This print is from user feedback
+        print("--- Base VDS Generation (Optimized) Finished ---")
         base_cohort_vds = vds_final_optimized # Assign the successfully generated VDS
-    # -------- END INSANELY MASSIVE SPEEDUP SECTION -------- (This comment is from original issue, good to keep conceptually)
 
-    # Final check on base_cohort_vds before concluding (from user feedback)
     if base_cohort_vds is None: # Should not happen if generation was successful
         print(f"FATAL ERROR: base_cohort_vds is None at the end of processing despite generation attempt. Cannot proceed.")
         sys.exit(1)
@@ -594,7 +589,6 @@ def main():
     print(f"Base Cohort VDS at {args.base_cohort_vds_path_out} is ready with {final_sample_count} samples.\n")
 
     # Save the sample ID list used for the VDS (whether downsampled or full WGS+EHR)
-    # (Logic from user feedback)
     df_to_save_ids = None
     if 'final_ids_for_vds_df' not in locals() or final_ids_for_vds_df is None or final_ids_for_vds_df.empty:
         print("INFO: 'final_ids_for_vds_df' not directly available. Extracting IDs from final VDS for saving.")
