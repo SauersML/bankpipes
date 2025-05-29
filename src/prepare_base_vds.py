@@ -383,14 +383,22 @@ def main():
 
 
         # 6. **NEW CRITICAL STEP**: Optimize reference_data for the Target Cohort VDS
+        # This step uses hl.vds.truncate_reference_blocks to cap the length of reference blocks.
+        # As per Hail 0.2.x documentation (and verified by source code provided by user):
+        # - Function: hail.vds.truncate_reference_blocks(ds, *, max_ref_block_base_pairs=None, ref_block_winsorize_fraction=None)
+        # - Purpose: Caps reference blocks at a maximum length to permit faster interval filtering later on.
+        #   This is crucial for efficient querying, especially when using hl.vds.filter_intervals with split_reference_blocks=True
+        #   (as done in process_prs_model.py) and for the hl.vds.to_dense_mt step.
+        # - Parameter: `max_ref_block_base_pairs` specifies the maximum size of reference blocks in base pairs.
+        # The All of Us documentation also highlights the importance of VDS optimizations for large datasets.
         MAX_REF_BLOCK_LENGTH = 10000  # e.g., 10kb. This is a tunable parameter.
-        print(f"Truncating reference blocks to max length {MAX_REF_BLOCK_LENGTH} for the target cohort VDS...")
+        print(f"Truncating reference blocks to max length {MAX_REF_BLOCK_LENGTH} bp for the target cohort VDS...")
         vds_final_prepared = hl.vds.truncate_reference_blocks(
             vds_target_cohort, 
-            max_block_length=MAX_REF_BLOCK_LENGTH
+            max_ref_block_base_pairs=MAX_REF_BLOCK_LENGTH # Correct parameter for Hail 0.2.x
         )
         del vds_target_cohort # Free memory
-        print(f"Reference blocks truncated. Variant_data partitions: {vds_final_prepared.variant_data.n_partitions()}, Reference_data partitions: {vds_final_prepared.reference_data.n_partitions()}")
+        print(f"Reference blocks truncated. Resulting VDS variant_data partitions: {vds_final_prepared.variant_data.n_partitions()}, Reference_data partitions: {vds_final_prepared.reference_data.n_partitions()}")
 
 
         # 7. **REMOVED GLOBAL REPARTITIONING OF VARIANT_DATA**
