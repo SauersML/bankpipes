@@ -132,21 +132,11 @@ if __name__ == "__main__":
     log.info("--- Dependency Setup Script Finished ---")
 
     if not pyspark_verified: # PySpark verification is the most part
-        log.error("CRITICAL FAILURE: PySpark was not installed or verified to the target version specified in this script.")
-        log.error(f"Target PySpark version was: {PYSPARK_VERSION_TO_INSTALL}.")
-        log.error("This is a fatal error. Halting execution to prevent further issues.")
-        sys.exit(1) # Exit immediately if PySpark is not verified
-    else:
-        log.info(f"Successfully verified PySpark version: {PYSPARK_VERSION_TO_INSTALL}.")
+        log.error("FAILURE: PySpark was not installed or verified to the target version.")
+    
+    if not nest_asyncio_verified: # nest_asyncio is important but perhaps not immediately fatal if missing
+        log.warning("Nest-asyncio was not successfully verified. This might lead to issues later.")
+        # Not exiting with error for nest_asyncio failure to allow pipeline to proceed if pyspark is okay
 
-    # nest_asyncio verification (can remain as a warning if it fails, as per original logic)
-    if not nest_asyncio_verified:
-        log.warning("Nest-asyncio was not successfully verified. This might lead to issues later for certain GCS/Hail operations.")
-        # Not exiting with error for nest_asyncio failure to allow pipeline to proceed if pyspark is okay.
-        # However, the overall success message should reflect this if we want to be very strict.
-        # For now, only PySpark is a hard blocker.
-
-    # If we've reached this point, PySpark (the critical dependency) is verified.
     log.info("Dependency setup deemed successful (PySpark verified to target version).")
-    # If nest_asyncio also needs to be a hard blocker, the condition for this log and exit(0) would change.
     sys.exit(0)

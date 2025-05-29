@@ -389,6 +389,8 @@ def main():
             excluded_ht, 
             id_column_name='sample_id' 
         )
+        cleaned_vds = cleaned_vds.persist('MEMORY_AND_DISK')
+        print("INFO: Persisted cleaned_vds to memory and disk.")
         del full_vds, excluded_ht
 
         # Logic to define final_ids_for_vds_df (either from WGS+EHR or downsampling)
@@ -484,6 +486,9 @@ def main():
         current_base_vds = current_base_vds.persist('MEMORY_AND_DISK')
         print("INFO: Persisted current_base_vds to memory and disk.")
 
+        if 'cleaned_vds' in locals() and hasattr(cleaned_vds, 'unpersist'):
+            print("INFO: Unpersisting cleaned_vds.")
+            cleaned_vds.unpersist()
         del cleaned_vds, target_samples_ht, vd_target_cohort_filtered, rd_target_cohort_filtered
 
         num_samples_in_vds = current_base_vds.variant_data.count_cols() # Action
