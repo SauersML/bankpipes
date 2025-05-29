@@ -450,10 +450,6 @@ def main():
     # This list is crucial for knowing the target cohort, even if some IDs were not found in the source VDS.
     if final_ids_for_vds_df is None or final_ids_for_vds_df.empty:
         print("FATAL ERROR: final_ids_for_vds_df is not available for saving sample list. This indicates a logic error in sample determination.")
-        # As a fallback, could try to get sample IDs from vds_for_target_cohort.variant_data.s.collect()
-        # and convert to Pandas DataFrame, but this is slow and means the primary ID list was lost.
-        # Example: actual_samples_in_vds_list = vds_for_target_cohort.variant_data.s.collect()
-        # final_ids_for_vds_df = pd.DataFrame({'s': actual_samples_in_vds_list})
         sys.exit(1) # Exit because final_ids_for_vds_df should always be populated if VDS generation was attempted.
         
     # Rename 's' column to 'person_id' before saving, as per requirements
