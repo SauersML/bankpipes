@@ -540,15 +540,9 @@ def main():
     df_to_save_ids = final_ids_for_vds_df.rename(columns={'s': 'person_id'})
     save_sample_ids_to_gcs(df_to_save_ids, args.wgs_ehr_ids_gcs_path_out, fs)
 
-    # Consider cleaning up TRUNCATED_VDS_CHECKPOINT_PATH if it exists and main process was successful
-    # Example: if gcs_path_exists(TRUNCATED_VDS_CHECKPOINT_PATH): 
-    #              delete_gcs_path(TRUNCATED_VDS_CHECKPOINT_PATH, recursive=True)
-
     print(f"Script completed successfully.")
     print(f"Output Base VDS path: {args.base_cohort_vds_path_out}")
     print(f"Output Sample ID list path: {args.wgs_ehr_ids_gcs_path_out}")
 
 if __name__ == "__main__":
     main()
-
-[end of src/prepare_base_vds.py]
