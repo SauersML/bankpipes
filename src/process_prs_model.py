@@ -295,12 +295,17 @@ def filter_vds_by_intervals(vds: hl.vds.VariantDataset, gcs_intervals_path: str,
             print(f"[{prs_id}] Loaded {interval_count} intervals for filtering.")
 
         print(f"[{prs_id}] Applying interval filter to VDS variant data...")
-        # Filtering VDS directly is more efficient than converting to MT first if only using variant_data
         filtered_variant_data = hl.filter_intervals(vds.variant_data, locus_intervals)
-        filtered_ref_data = hl.filter_intervals(vds.reference_data, locus_intervals) # Filter ref data too
+        
+        print(f"[{prs_id}] Applying interval filter to VDS reference data with split_reference_blocks=True...")
+        filtered_ref_data = hl.filter_intervals(
+            vds.reference_data, 
+            locus_intervals, 
+            split_reference_blocks=True # Ensure reference blocks are split for efficient densification
+        )
         vds_filtered = hl.vds.VariantDataset(filtered_ref_data, filtered_variant_data)
 
-        n_variants_after = vds_filtered.variant_data.count_rows()
+        n_variants_after = vds_filtered.variant_data.count_rows() # Check rows in variant_data
         print(f"[{prs_id}] VDS filtered to PRS intervals. Variants remaining in variant_data: {n_variants_after}\n")
         if n_variants_after == 0:
             print(f"[{prs_id}] WARNING: No variants remained in variant_data after interval filtering.")
@@ -368,75 +373,79 @@ def annotate_and_score(vds_filtered: hl.vds.VariantDataset, prs_ht: hl.Table, pr
     print(f"[{prs_id}] Annotating VDS with PRS info and computing scores...")
     try:
         # PRS HT is not empty before proceeding
-        if prs_ht.count() == 0:
-            print(f"[{prs_id}] ERROR: Input PRS HailTable for annotation is empty. Cannot annotate.")
+        if prs_ht.count() == 0: # This count can be slow if prs_ht is large and not persisted.
+                                 # Consider if this check is essential or can be deferred to after annotation.
+            print(f"[{prs_id}] ERROR: Input PRS HailTable for annotation appears empty. Cannot annotate.")
+            # prs_ht.describe() # Log schema for debugging
             return None
 
-        # Convert the variant_data part of the VDS to a MatrixTable for annotation/scoring
-        mt = vds_filtered.variant_data
-        n_variants_before_annot = mt.count_rows()
-        if n_variants_before_annot == 0:
-            print(f"[{prs_id}] WARNING: Filtered VDS variant_data has 0 rows before annotation. No scores can be computed.")
-            # Return an empty table with the expected schema? Or None? Returning None is simpler.
-            return None
-
-        # Log the initial entry schema from vds.variant_data
+        # --- DENSIFY VDS TO MT ---
+        # This VDS is already filtered to ~1000 samples and PRS-specific intervals.
+        # truncate_reference_blocks (in prepare_base_vds) and split_reference_blocks=True (in filter_vds_by_intervals)
+        # are critical for making to_dense_mt efficient here.
+        print(f"[{prs_id}] Densifying VDS to MT for model scoring. Input VDS has {vds_filtered.variant_data.count_cols()} samples.")
         try:
-            print(f"[{prs_id}] Initial MT entry schema from VDS variant_data: {mt.entry.dtype}")
-        except Exception as schema_e:
-            print(f"[{prs_id}] Could not retrieve initial MT entry schema: {schema_e}")
+            # Log partition info before densification for debugging potential performance issues
+            # print(f"[{prs_id}] VDS variant_data partitions: {vds_filtered.variant_data.n_partitions()}")
+            # print(f"[{prs_id}] VDS reference_data partitions: {vds_filtered.reference_data.n_partitions()}")
+            # print(f"[{prs_id}] VDS variant_data estimated row count: {vds_filtered.variant_data.estimated_size() / (vds_filtered.variant_data.entry.dtype.size * vds_filtered.variant_data.count_cols()) if vds_filtered.variant_data.count_cols() > 0 else 'N/A'}") # Very rough estimate
+            
+            mt = hl.vds.to_dense_mt(vds_filtered)
+        except Exception as e:
+            print(f"[{prs_id}] ERROR during hl.vds.to_dense_mt: {e}")
+            # Log details that might help diagnose:
+            print(f"[{prs_id}] Details of VDS at densification error time:")
+            print(f"[{prs_id}]   Variant data cols: {vds_filtered.variant_data.count_cols()}, rows: {vds_filtered.variant_data.count_rows()} (can be slow), partitions: {vds_filtered.variant_data.n_partitions()}")
+            print(f"[{prs_id}]   Reference data cols: {vds_filtered.reference_data.count_cols()}, rows: {vds_filtered.reference_data.count_rows()} (can be slow), partitions: {vds_filtered.reference_data.n_partitions()}")
+            # vds_filtered.variant_data.show(5)
+            # vds_filtered.reference_data.show(5)
+            return None 
+
+        n_variants_in_dense_mt = mt.count_rows()
+        if n_variants_in_dense_mt == 0:
+            print(f"[{prs_id}] WARNING: Dense MT has 0 rows after hl.vds.to_dense_mt. This means no variants from the PRS model intervals were found in the VDS for these samples, or all were reference sites.")
+            return None # No variants to score.
+
+        print(f"[{prs_id}] Dense MT created with {n_variants_in_dense_mt} variants and {mt.count_cols()} samples.")
+        print(f"[{prs_id}] Dense MT schema: entry: {mt.entry.dtype}, row: {mt.row.dtype}, col: {mt.col.dtype}")
+
+        # Ensure 'GT' field is present as expected by calculate_effect_allele_dosage
+        # hl.vds.to_dense_mt is expected to produce GT.
+        if 'GT' not in mt.entry:
+            print(f"[{prs_id}] FATAL ERROR: 'GT' field not found in dense MT after to_dense_mt. Entry schema: {mt.entry.dtype}")
+            # mt.describe() # For detailed debugging
+            return None
+        # --- END DENSIFICATION ---
 
         # Annotate rows with PRS info (effect allele, weight)
-        print(f"[{prs_id}] Annotating {n_variants_before_annot} variants with PRS info...")
-        mt = mt.annotate_rows(prs=prs_ht[mt.locus])
+        print(f"[{prs_id}] Annotating {n_variants_in_dense_mt} variants in dense MT with PRS info...")
+        mt = mt.annotate_rows(prs=prs_ht[mt.locus]) # mt.locus should exist from to_dense_mt
 
-        # Filter to variants found in the PRS table (where annotation was successful)
+        # Filter to variants found in the PRS table (where annotation was successful and prs fields are defined)
         mt = mt.filter_rows(hl.is_defined(mt.prs) & hl.is_defined(mt.prs.weight) & hl.is_defined(mt.prs.effect_allele))
-
         n_variants_after_row_filter = mt.count_rows()
         print(f"[{prs_id}] Variants remaining after row annotation and filtering: {n_variants_after_row_filter}")
 
         if n_variants_after_row_filter == 0:
-            print(f"[{prs_id}] WARNING: No variants overlapped between VDS and PRS table with valid info after row filtering. No scores computed.")
+            print(f"[{prs_id}] WARNING: No variants overlapped between dense MT and PRS table with valid info after row filtering. No scores computed.")
             return None
-
-        # calculate_effect_allele_dosage function expects a GT (global GT) field.
-        if 'GT' not in mt.entry:
-            if 'LGT' in mt.entry and 'LA' in mt.entry:
-                print(f"[{prs_id}] 'GT' field not found in MT entries. 'LGT' and 'LA' found. Generating 'GT' using hl.vds.lgt_to_gt.")
-                mt = mt.annotate_entries(GT = hl.vds.lgt_to_gt(mt.LGT, mt.LA))
-            else:
-                print(f"[{prs_id}] FATAL ERROR: 'GT' field is not present, and 'LGT'/'LA' fields are also missing. Cannot proceed with dosage calculation. Available entry fields: {list(mt.entry.keys())}")
-                return None
-        elif 'GT' in mt.entry:
-            print(f"[{prs_id}] 'GT' field found in MT entries.")
-
-        # Before expensive entry-wise operations, select only essential entry fields.
-        # We need 'GT' for dosage calculation. Other original entry fields from VDS are stripped to reduce data volume.
-        print(f"[{prs_id}] Selecting only 'GT' from entry fields to optimize subsequent operations. Current entry fields: {list(mt.entry.keys())}")
-        mt = mt.select_entries(mt.GT)
-        print(f"[{prs_id}] Entry fields after selection: {list(mt.entry.keys())}")
-
-        # For very small MatrixTables resulting from filtering, having too many partitions can be inefficient.
+        
+        # Coalesce if needed (logic from original script, should still be relevant for small dense MTs)
         current_partitions = mt.n_partitions()
-        # Heuristic: if variant count is low and partitions are numerous, reduce them.
-        # Aim for at least ~1000 variants per partition, but not fewer than 10 partitions overall.
-        # This coalesce step is applied only if it leads to a substantial reduction in partition count.
-        if n_variants_after_row_filter > 0: # there are rows to count/process
-            desired_min_partitions_heuristic = 10
-            variants_per_partition_target = 2500 # Tunable parameter
-            calculated_target_partitions = max(desired_min_partitions_heuristic, (n_variants_after_row_filter + variants_per_partition_target - 1) // variants_per_partition_target) # Ceiling division
+        if n_variants_after_row_filter > 0:
+            desired_min_partitions_heuristic = max(1, hl.spark_context().defaultParallelism // 4) # Ensure at least 1, relate to cores
+            variants_per_partition_target = 5000 # Adjusted for potentially smaller, dense MTs
+            calculated_target_partitions = max(desired_min_partitions_heuristic, (n_variants_after_row_filter + variants_per_partition_target - 1) // variants_per_partition_target)
 
-            # Only coalesce if current partitions are significantly more than calculated target and above a certain threshold
-            if current_partitions > (calculated_target_partitions * 1.5) and current_partitions > 20: # e.g. 50% more and more than 20
-                final_target_partitions = min(current_partitions, calculated_target_partitions) # not to increase partitions
-                print(f"[{prs_id}] Coalescing MT with {n_variants_after_row_filter} variants from {current_partitions} to {final_target_partitions} partitions.")
+            if current_partitions > calculated_target_partitions and current_partitions > (desired_min_partitions_heuristic * 2) : # Only if significantly more
+                final_target_partitions = min(current_partitions, calculated_target_partitions)
+                print(f"[{prs_id}] Coalescing dense MT with {n_variants_after_row_filter} variants from {current_partitions} to {final_target_partitions} partitions.")
                 mt = mt.coalesce(final_target_partitions)
-                print(f"[{prs_id}] MT coalesced. New partition count: {mt.n_partitions()}")
+                print(f"[{prs_id}] Dense MT coalesced. New partition count: {mt.n_partitions()}")
 
-        # Calculate dosage using the correct function
+        # Calculate dosage using the correct function (operates on GT from dense MT)
         print(f"[{prs_id}] Calculating effect allele dosage...")
-        mt = mt.annotate_entries(effect_allele_count=calculate_effect_allele_dosage(mt)) # Pass the row context
+        mt = mt.annotate_entries(effect_allele_count=calculate_effect_allele_dosage(mt)) # Pass the row context (mt.row or just mt)
 
         # Calculate per-variant contribution, handling missing dosage or weight
         # Treat missing contribution as zero for the sum aggregation.
