@@ -74,9 +74,9 @@ def load_excluded_samples_ht(path_primary: str, path_secondary_or_default: str, 
     """
     # Determine which path to actually use based on existence, prioritizing primary
     actual_path_to_load = None
-    if gcs_path_exists(path_primary, fs=fs_gcs): # Pass fs to gcs_path_exists
+    if gcs_path_exists(path_primary): # Removed fs=fs_gcs
         actual_path_to_load = path_primary
-    elif path_secondary_or_default and gcs_path_exists(path_secondary_or_default, fs=fs_gcs): # Pass fs
+    elif path_secondary_or_default and gcs_path_exists(path_secondary_or_default): # Removed fs=fs_gcs
         print(f"Primary flagged samples path {path_primary} not found. Using secondary/default: {path_secondary_or_default}")
         actual_path_to_load = path_secondary_or_default
     else:
@@ -186,9 +186,10 @@ def save_sample_ids_to_gcs(df: pd.DataFrame, gcs_path: str, fs_gcs):
     print(f"Storing sample IDs (column: 'person_id') to GCS: {gcs_path}")
     try:
         parent_dir = os.path.dirname(gcs_path)
-        if not gcs_path_exists(parent_dir, fs=fs_gcs): # Pass fs
+        if not gcs_path_exists(parent_dir): # Removed fs=fs_gcs
              print(f"Creating GCS directory: {parent_dir}")
-             fs_gcs.mkdirs(parent_dir) # exist_ok=True is default for GCSFS.mkdirs
+             # Assuming fs_gcs is the GCSFileSystem instance initialized in main and passed to this function
+             fs_gcs.mkdirs(parent_dir) # exist_ok=True is default for GCSFS.mkdirs for gcsfs, ensure your util matches
              
         with fs_gcs.open(gcs_path, 'w') as f:
             df[['person_id']].to_csv(f, index=False) # Save only the 'person_id' column with header
@@ -202,7 +203,7 @@ def save_sample_ids_to_gcs(df: pd.DataFrame, gcs_path: str, fs_gcs):
 def load_phenotype_cases_from_csv(gcs_path: str, fs_gcs) -> pd.DataFrame:
     """Loads the phenotype case definitions from the specified GCS CSV file."""
     print(f"Loading phenotype case data from CSV: {gcs_path}")
-    if not gcs_path_exists(gcs_path, fs=fs_gcs): # Pass fs
+    if not gcs_path_exists(gcs_path): # Removed fs=fs_gcs
         print(f"FATAL ERROR: Phenotype cases CSV file not found at {gcs_path}")
         sys.exit(1)
     try:
@@ -262,14 +263,14 @@ def main():
             else: 
                 print("[CHECKPOINT CORRUPTED] Loaded VDS has 0 samples. Assuming invalid.")
                 vds_for_target_cohort = None 
-                if not delete_gcs_path(TARGET_COHORT_VDS_PATH_OUT, recursive=True, fs=fs): # Pass fs
+                if not delete_gcs_path(TARGET_COHORT_VDS_PATH_OUT, recursive=True): # Removed fs=fs
                      print(f"WARNING: Failed to delete corrupted VDS checkpoint at {TARGET_COHORT_VDS_PATH_OUT}")
         except Exception as e:
             print(f"[CHECKPOINT CORRUPTED] Failed to read VDS from {TARGET_COHORT_VDS_PATH_OUT}. Error: {str(e)}")
             vds_for_target_cohort = None # Ensure it's None on failure
             # Attempt deletion only if clearly a VDS format issue, otherwise could be GCS permissions etc.
             if "Not a VDS" in str(e) or "metadata.json.gz is missing" in str(e):
-                 if not delete_gcs_path(TARGET_COHORT_VDS_PATH_OUT, recursive=True, fs=fs): # Pass fs
+                 if not delete_gcs_path(TARGET_COHORT_VDS_PATH_OUT, recursive=True): # Removed fs=fs
                     print(f"WARNING: Failed to delete VDS checkpoint at {TARGET_COHORT_VDS_PATH_OUT} after read failure.")
             else:
                 print(f"Error reading VDS checkpoint was not typical corruption. Investigate {TARGET_COHORT_VDS_PATH_OUT} before deleting.")
@@ -416,7 +417,7 @@ def main():
         except Exception as e:
             print(f"ERROR: Failed to write or verify Target Cohort VDS: {e}")
             # Attempt to delete if write failed partway, to prevent corrupted state for next run
-            if not delete_gcs_path(TARGET_COHORT_VDS_PATH_OUT, recursive=True, fs=fs): # Pass fs
+            if not delete_gcs_path(TARGET_COHORT_VDS_PATH_OUT, recursive=True): # Removed fs=fs
                  print(f"WARNING: Failed to delete VDS checkpoint at {TARGET_COHORT_VDS_PATH_OUT} after write/verify failure.")
             sys.exit(1) # Exit if write fails
         
@@ -433,7 +434,7 @@ def main():
     if final_sample_count == 0:
         print(f"FATAL ERROR: Final Target Cohort VDS at {TARGET_COHORT_VDS_PATH_OUT} has 0 samples.")
         # Consider deleting the empty VDS if it was written
-        delete_gcs_path(TARGET_COHORT_VDS_PATH_OUT, recursive=True, fs=fs)
+        delete_gcs_path(TARGET_COHORT_VDS_PATH_OUT, recursive=True) # Removed fs=fs
         sys.exit(1)
     print(f"Target Cohort VDS at {TARGET_COHORT_VDS_PATH_OUT} is ready with {final_sample_count} samples.\n")
 
@@ -441,10 +442,6 @@ def main():
     # This list is crucial for knowing the target cohort, even if some IDs were not found in the source VDS.
     if final_ids_for_vds_df is None or final_ids_for_vds_df.empty:
         print("FATAL ERROR: final_ids_for_vds_df is not available for saving sample list. This indicates a logic error in sample determination.")
-        # As a fallback, could try to get sample IDs from vds_for_target_cohort.variant_data.s.collect()
-        # and convert to Pandas DataFrame, but this is slow and means the primary ID list was lost.
-        # Example: actual_samples_in_vds_list = vds_for_target_cohort.variant_data.s.collect()
-        # final_ids_for_vds_df = pd.DataFrame({'s': actual_samples_in_vds_list})
         sys.exit(1) # Exit because final_ids_for_vds_df should always be populated if VDS generation was attempted.
         
     # Rename 's' column to 'person_id' before saving, as per requirements
