@@ -40,18 +40,16 @@ def load_aou_input_mt(path: str) -> hl.MatrixTable:
     try:
         mt = hl.read_matrix_table(path)
         
-        if mt.count_cols() == 0 or mt.count_rows() == 0:
-            print(f"FATAL ERROR: Loaded MatrixTable from {path} appears to have 0 samples or 0 variants.")
+        num_cols = mt.count_cols() # Action
+        num_rows = mt.count_rows() # Action
+        if num_cols == 0 or num_rows == 0:
+            print(f"FATAL ERROR: Loaded MatrixTable from {path} appears to have 0 samples ({num_cols}) or 0 variants ({num_rows}).")
             sys.exit(1)
 
-        print("MatrixTable successfully loaded.")
-        print(f"Initial MT n_partitions (rows): {mt.n_partitions()}") 
-        # Note: MTs don't have separate col partitions in the same way as VDS variant_data/reference_data.
-        # Col partitions are implicitly 1 unless ._separate_cols() was used, which is rare for input MTs.
-        print(f"Initial MT column count: {mt.count_cols()}")
-        print(f"Initial MT row count: {mt.count_rows()}")
+        print(f"INFO: Input AoU MatrixTable successfully loaded. Samples: {num_cols}, Variants: {num_rows}")
+        print(f"INFO: Input MT n_partitions: {mt.n_partitions()}") # Action
         try:
-            print(f"Initial MT entry schema: {mt.entry.dtype}\n")
+            # print(f"Initial MT entry schema: {mt.entry.dtype}\n") # Reduced verbosity
             # print(f"Initial MT row schema: {mt.row.dtype}\n")
             # print(f"Initial MT col schema: {mt.col.dtype}\n")
         except Exception as schema_e:
@@ -440,114 +438,106 @@ def main():
 
         print(f"Filtering MT (after flagged/related removal) to the {target_samples_ht.count()} target samples...") # Action
         # Instead of filter_mt_to_sample_list, apply filter directly to cleaned_mt
-        current_base_mt = cleaned_mt.filter_cols(hl.is_defined(target_samples_ht[cleaned_mt.s]))
+        # This is now aliased as cleaned_mt_after_exclusion for clarity with new logging
+        cleaned_mt_after_exclusion = cleaned_mt 
+        current_base_mt = cleaned_mt_after_exclusion.filter_cols(hl.is_defined(target_samples_ht[cleaned_mt_after_exclusion.s]))
         
-        if current_base_mt is not None:
-            print("INFO: Persisting current_base_mt to memory and disk.")
-            current_base_mt = current_base_mt.persist('MEMORY_AND_DISK')
-        else:
-            print("WARNING: current_base_mt is None after target sample filtering. This is unexpected.")
-            sys.exit("Exiting due to current_base_mt being None.")
+        # Unpersist cleaned_mt_after_exclusion (which is 'cleaned_mt') as it's been filtered into current_base_mt
+        # and current_base_mt will be persisted after consolidation.
+        if hasattr(cleaned_mt_after_exclusion, 'unpersist'):
+            print("INFO: Unpersisting cleaned_mt_after_exclusion (original cleaned_mt).")
+            cleaned_mt_after_exclusion.unpersist()
+        del cleaned_mt, cleaned_mt_after_exclusion, target_samples_ht # Explicitly delete to free memory references
 
-        if 'cleaned_mt' in locals() and cleaned_mt is not None and cleaned_mt != current_base_mt : # Ensure cleaned_mt was persisted and is different
-             if hasattr(cleaned_mt, 'unpersist'):
-                print("INFO: Unpersisting cleaned_mt.")
-                cleaned_mt.unpersist()
-             else:
-                print("WARNING: cleaned_mt does not have unpersist method or was already unpersisted.")
-        del cleaned_mt, target_samples_ht
+        # --- NEW CONSOLIDATION STEP ---
+        print(f"INFO: current_base_mt defined by all sample filters. Attempting to consolidate its partitioning BEFORE first major computation.")
+        consolidate_target_partitions = dynamic_partitions # Defined at the start of main()
+        print(f"INFO: Consolidating current_base_mt to approximately {consolidate_target_partitions} partitions with shuffle=True.")
+        current_base_mt = current_base_mt.repartition(consolidate_target_partitions, shuffle=True)
+        print(f"INFO: current_base_mt repartitioned to {current_base_mt.n_partitions()} partitions. Persisting this state.") # .n_partitions() is an action
+        current_base_mt = current_base_mt.persist('MEMORY_AND_DISK') 
+        print(f"INFO: Persisted current_base_mt after consolidation. Effective partitions: {current_base_mt.n_partitions()}")
 
-        num_samples_in_mt = current_base_mt.count_cols() # Action
-        print(f"MT filtered to target cohort. Samples: {num_samples_in_mt}.")
-        print(f"Initial partitions BEFORE any optimization: {current_base_mt.n_partitions()} (row partitions)")
-
+        # --- DIAGNOSTIC PRINTS POST-CONSOLIDATION ---
+        print(f"INFO: current_base_mt (post-consolidation and persist):")
+        print(f"INFO:   Sample count: {current_base_mt.count_cols()}") # Action
+        # print(f"INFO:   Variant count: {current_base_mt.count_rows()}") # Action (optional, can be slow)
+        print(f"INFO:   Partitions: {current_base_mt.n_partitions()}") # Action
+        
+        num_samples_in_mt = current_base_mt.count_cols() # Re-assign for later checks
         if num_samples_in_mt == 0:
-            print("FATAL ERROR: Filtering MT to target sample list resulted in 0 samples remaining.")
+            print("FATAL ERROR: current_base_mt has 0 samples after consolidation. This should not happen if filtering was correct.")
             sys.exit(1)
         if hasattr(final_ids_for_mt_df, '__len__') and num_samples_in_mt != len(final_ids_for_mt_df):
-             print(f"WARNING: Sample count mismatch! Expected {len(final_ids_for_mt_df)} from ID list, got {num_samples_in_mt} in MT.")
-
-        # -------- MT REPARTITIONING LOGIC (using coalesce) --------
-        print(f"DEBUG: current_base_mt sample count: {current_base_mt.count_cols()}, variant count: {current_base_mt.count_rows()}")
-        print(f"DEBUG: mt_current_n_partitions before repartition attempt: {current_base_mt.n_partitions()}")
-        mt_current_n_partitions = current_base_mt.n_partitions()
-        target_mt_partitions = dynamic_partitions # Defined at the start of main()
-
-        final_repartitioned_mt = current_base_mt # Start with current_base_mt
+             print(f"WARNING: Sample count mismatch post-consolidation! Expected {len(final_ids_for_mt_df)} from ID list, got {num_samples_in_mt} in MT.")
         
-        if mt_current_n_partitions > target_mt_partitions * 1.5:
-            print(f"INFO: Coalescing cohort dense MT from {mt_current_n_partitions} to {target_mt_partitions} partitions.")
-            final_repartitioned_mt = final_repartitioned_mt.coalesce(target_mt_partitions)
-            print(f"INFO: Cohort dense MT coalesced. New partitions: {final_repartitioned_mt.n_partitions()}")
-            # If coalescing happened and current_base_mt was persisted, 
-            # and it's different from final_repartitioned_mt (it should be after coalesce)
-            # unpersist the original current_base_mt
-            if current_base_mt != final_repartitioned_mt and hasattr(current_base_mt, '_persisted') and current_base_mt._persisted:
-                 print("INFO: Unpersisting original current_base_mt after coalescing.")
-                 current_base_mt.unpersist()
-        else:
-            print(f"INFO: Cohort dense MT already has {mt_current_n_partitions} partitions (target ~{target_mt_partitions}). No coalesce needed by this condition.")
-        
-        # No VDS-specific truncation (truncate_reference_blocks) is needed for MTs.
-        # The 'vds_final_optimized' equivalent is 'final_repartitioned_mt'
+        # -------- SIMPLIFIED FINAL REPARTITIONING/ASSIGNMENT --------
+        print(f"INFO: Assigning consolidated current_base_mt to final_repartitioned_mt.")
+        final_repartitioned_mt = current_base_mt
+        mt_current_n_partitions = current_base_mt.n_partitions() 
+        print(f"INFO: final_repartitioned_mt is now the consolidated current_base_mt with {mt_current_n_partitions} partitions.")
 
+        # The old 'if/else' block for coalesce is removed as current_base_mt is already repartitioned and persisted.
+        
         num_variants_final_mt = final_repartitioned_mt.count_rows() # Action
-        print(f"Final MT prepared. Samples: {num_samples_in_mt}, Variants: {num_variants_final_mt}.")
-        print(f"Final partitions: {final_repartitioned_mt.n_partitions()} (row partitions)")
+        print(f"INFO: Final MT prepared. Samples: {num_samples_in_mt}, Variants: {num_variants_final_mt}.")
+        print(f"INFO: Final partitions: {final_repartitioned_mt.n_partitions()} (row partitions)")
 
-        print(f"Writing final prepared Base Cohort MT to: {args.base_cohort_mt_path_out}")
+        print(f"INFO: Writing final prepared Base Cohort MT to: {args.base_cohort_mt_path_out}")
         try:
             final_repartitioned_mt.write(args.base_cohort_mt_path_out, overwrite=True) 
-            print("Base Cohort MT checkpoint successfully written.")
+            print("INFO: Base Cohort MT checkpoint successfully written.")
 
-            print("Verifying written MT checkpoint...")
+            print("INFO: Verifying written MT checkpoint...")
             mt_check = hl.read_matrix_table(args.base_cohort_mt_path_out)
             mt_check_sample_count = mt_check.count_cols() # Action
             mt_check_variant_count = mt_check.count_rows() # Action
             mt_check_partitions = mt_check.n_partitions()
-            print(f"MT checkpoint verified. Sample count: {mt_check_sample_count}, Variant count: {mt_check_variant_count}, Partitions: {mt_check_partitions}")
+            print(f"INFO: MT checkpoint verified. Sample count: {mt_check_sample_count}, Variant count: {mt_check_variant_count}, Partitions: {mt_check_partitions}")
             
             if mt_check_sample_count != num_samples_in_mt:
                  print(f"WARNING: Sample count mismatch in final MT checkpoint! Expected {num_samples_in_mt}, got {mt_check_sample_count}")
             if mt_check_variant_count != num_variants_final_mt:
                  print(f"WARNING: Variant count mismatch in final MT checkpoint! Expected {num_variants_final_mt}, got {mt_check_variant_count}")
-            # Check if partitions are reasonably close to target, if repartitioning was expected
-            if mt_current_n_partitions > target_mt_partitions * 1.5 and \
-               not (target_mt_partitions * 0.8 < mt_check_partitions < target_mt_partitions * 1.2):
-                 print(f"WARNING: MT partition count ({mt_check_partitions}) differs significantly from target ({target_mt_partitions}) after repartitioning.")
+            if mt_check_partitions != final_repartitioned_mt.n_partitions(): # Check against actual final partitions
+                 print(f"WARNING: MT partition count ({mt_check_partitions}) differs from expected ({final_repartitioned_mt.n_partitions()}).")
             del mt_check
         except Exception as e:
             print(f"ERROR: Failed to write or verify final Base Cohort MT checkpoint: {e}")
             sys.exit(1) 
+        
+        # Unpersist the final MT after it has been written and verified.
+        if hasattr(final_repartitioned_mt, '_persisted') and final_repartitioned_mt._persisted:
+            print(f"INFO: Unpersisting final_repartitioned_mt (which is current_base_mt).")
+            final_repartitioned_mt.unpersist()
 
         print("--- Base MT Generation Finished ---")
-        base_cohort_mt = final_repartitioned_mt # Assign the successfully generated MT
+        base_cohort_mt = final_repartitioned_mt 
+        # Note: base_cohort_mt is now assigned final_repartitioned_mt. If final_repartitioned_mt was unpersisted, 
+        # this means base_cohort_mt is also pointing to an unpersisted MT. This is fine as it's used for 
+        # final sample ID extraction if needed, which doesn't require persisted state for cols().select('s').
 
-    if base_cohort_mt is None: 
-        print(f"FATAL ERROR: base_cohort_mt is None at the end of processing despite generation attempt. Cannot proceed.")
-        sys.exit(1)
-
-    final_sample_count = base_cohort_mt.count_cols() # Action
-    if final_sample_count == 0:
+    if base_cohort_mt is None:
         print(f"FATAL ERROR: Final Base Cohort MT at {args.base_cohort_mt_path_out} has 0 samples.")
         if hail_path_exists(args.base_cohort_mt_path_out, project_id_for_billing=args.google_billing_project):
             delete_gcs_path(args.base_cohort_mt_path_out, project_id_for_billing=args.google_billing_project, recursive=True)
         sys.exit(1)
-    print(f"Base Cohort MT at {args.base_cohort_mt_path_out} is ready with {final_sample_count} samples.\n")
+    print(f"INFO: Base Cohort MT at {args.base_cohort_mt_path_out} is ready with {final_sample_count} samples.\n")
 
     df_to_save_ids = None
     if 'final_ids_for_mt_df' not in locals() or final_ids_for_mt_df is None or final_ids_for_mt_df.empty:
-        print("INFO: 'final_ids_for_mt_df' not directly available. Extracting IDs from final MT for saving.")
-        ids_from_mt_ht = base_cohort_mt.cols().select('s')
+        print("INFO: 'final_ids_for_mt_df' not directly available for saving. Extracting IDs from final base_cohort_mt (which might be unpersisted).")
+        ids_from_mt_ht = base_cohort_mt.cols().select('s') # This should work on an unpersisted MT ref
         df_to_save_ids = ids_from_mt_ht.to_pandas().rename(columns={'s': 'person_id'})
     else:
+        print("INFO: Using 'final_ids_for_mt_df' for saving sample IDs.")
         df_to_save_ids = final_ids_for_mt_df.rename(columns={'s': 'person_id'})
 
     save_sample_ids_to_gcs(df_to_save_ids, args.wgs_ehr_ids_gcs_path_out, fs)
 
-    print(f"Script completed successfully.")
-    print(f"Output Base MT path: {args.base_cohort_mt_path_out}")
-    print(f"Output Sample ID list path: {args.wgs_ehr_ids_gcs_path_out}")
+    print(f"INFO: Script completed successfully.")
+    print(f"INFO: Output Base MT path: {args.base_cohort_mt_path_out}")
+    print(f"INFO: Output Sample ID list path: {args.wgs_ehr_ids_gcs_path_out}")
 
 if __name__ == "__main__":
     main()
