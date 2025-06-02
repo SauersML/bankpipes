@@ -1,3 +1,13 @@
+# Configuration for the AoU PRS Pipeline
+# 
+# This pipeline relies on several environment variables being set. 
+# One crucial variable is AOU_COMMON_VARIANT_MT_PATH, which should point to the 
+# All of Us common variant MatrixTable.
+# Example AOU_COMMON_VARIANT_MT_PATH: gs://fc-aou-datasets-controlled/v8/wgs/short_read/snpindel/acaf_threshold/splitMT/hail.mt
+# 
+# Other environment variables like GOOGLE_PROJECT, WORKSPACE_BUCKET, 
+# WORKSPACE_CDR, and CDR_STORAGE_PATH are also required by the main orchestration script.
+
 phenotype_definition:
   # Human-readable name for the target phenotype. This name will be
   # utilized in logging, naming of output files, and in generated plots.
