@@ -467,22 +467,26 @@ def main():
         if hasattr(final_ids_for_mt_df, '__len__') and num_samples_in_mt != len(final_ids_for_mt_df):
              print(f"WARNING: Sample count mismatch! Expected {len(final_ids_for_mt_df)} from ID list, got {num_samples_in_mt} in MT.")
 
-        # -------- MT REPARTITIONING LOGIC --------
+        # -------- MT REPARTITIONING LOGIC (using coalesce) --------
+        print(f"DEBUG: current_base_mt sample count: {current_base_mt.count_cols()}, variant count: {current_base_mt.count_rows()}")
+        print(f"DEBUG: mt_current_n_partitions before repartition attempt: {current_base_mt.n_partitions()}")
         mt_current_n_partitions = current_base_mt.n_partitions()
         target_mt_partitions = dynamic_partitions # Defined at the start of main()
 
         final_repartitioned_mt = current_base_mt # Start with current_base_mt
         
         if mt_current_n_partitions > target_mt_partitions * 1.5:
-            print(f"INFO: Repartitioning MT from {mt_current_n_partitions} to {target_mt_partitions} partitions (shuffle=True).")
-            final_repartitioned_mt = final_repartitioned_mt.repartition(target_mt_partitions, shuffle=True)
-            print(f"INFO: MT repartitioned. New partitions: {final_repartitioned_mt.n_partitions()}")
-            # If repartitioning happened and current_base_mt was persisted, unpersist it if it's different from final_repartitioned_mt
+            print(f"INFO: Coalescing cohort dense MT from {mt_current_n_partitions} to {target_mt_partitions} partitions.")
+            final_repartitioned_mt = final_repartitioned_mt.coalesce(target_mt_partitions)
+            print(f"INFO: Cohort dense MT coalesced. New partitions: {final_repartitioned_mt.n_partitions()}")
+            # If coalescing happened and current_base_mt was persisted, 
+            # and it's different from final_repartitioned_mt (it should be after coalesce)
+            # unpersist the original current_base_mt
             if current_base_mt != final_repartitioned_mt and hasattr(current_base_mt, '_persisted') and current_base_mt._persisted:
-                 print("INFO: Unpersisting original current_base_mt after repartitioning.")
+                 print("INFO: Unpersisting original current_base_mt after coalescing.")
                  current_base_mt.unpersist()
         else:
-            print(f"INFO: MT already has {mt_current_n_partitions} partitions (target ~{target_mt_partitions}). No repartitioning needed.")
+            print(f"INFO: Cohort dense MT already has {mt_current_n_partitions} partitions (target ~{target_mt_partitions}). No coalesce needed by this condition.")
         
         # No VDS-specific truncation (truncate_reference_blocks) is needed for MTs.
         # The 'vds_final_optimized' equivalent is 'final_repartitioned_mt'
