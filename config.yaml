@@ -1,12 +1,15 @@
-# Configuration for the AoU PRS Pipeline
-# 
-# This pipeline relies on several environment variables being set. 
-# One crucial variable is AOU_COMMON_VARIANT_MT_PATH, which should point to the 
-# All of Us common variant MatrixTable.
-# Example AOU_COMMON_VARIANT_MT_PATH: gs://fc-aou-datasets-controlled/v8/wgs/short_read/snpindel/acaf_threshold/splitMT/hail.mt
-# 
-# Other environment variables like GOOGLE_PROJECT, WORKSPACE_BUCKET, 
-# WORKSPACE_CDR, and CDR_STORAGE_PATH are also required by the main orchestration script.
+# This pipeline relies on several environment variables being set in your execution environment.
+# Key among these for specifying the input genomic data is:
+#
+# WGS_ACAF_THRESHOLD_SPLIT_HAIL_PATH:
+#   This variable must point to the GCS path of the All of Us ACAF threshold split Hail MatrixTable.
+#   Example: gs://fc-aou-datasets-controlled/v8/wgs/short_read/snpindel/acaf_threshold/splitMT/hail.mt
+#
+# Other required environment variables include:
+#   GOOGLE_PROJECT: Your Google Cloud Project ID.
+#   WORKSPACE_BUCKET: Your workspace bucket (e.g., gs://fc-secure-...).
+#   WORKSPACE_CDR: The BigQuery path to the workspace CDR (e.g., fc-aou-cdr-prod-ct.CYYYYQQRR).
+#   CDR_STORAGE_PATH: The GCS path to the CDR storage bucket (e.g., gs://fc-aou-datasets-controlled/v8).
 
 phenotype_definition:
   # Human-readable name for the target phenotype. This name will be

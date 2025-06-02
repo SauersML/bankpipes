@@ -134,12 +134,12 @@ class Config:
         self.pheno_name: str = pheno.get("target_name") or sys.exit("target_name missing")
         self.pheno_concept_ids: list[int] = pheno.get("concept_ids") or sys.exit("concept_ids missing")
         self.env = {k: os.getenv(k) for k in (
-            "GOOGLE_PROJECT", "WORKSPACE_BUCKET", "AOU_INPUT_MT_PATH",
+            "GOOGLE_PROJECT", "WORKSPACE_BUCKET", "WGS_ACAF_THRESHOLD_SPLIT_HAIL_PATH",
             "WORKSPACE_CDR", "CDR_STORAGE_PATH"
         )}
         if any(v is None for v in self.env.values()):
             missing = [k for k, v in self.env.items() if v is None]
-            sys.exit(f"Missing required env vars: {', '.join(missing)}. Please ensure AOU_INPUT_MT_PATH (instead of WGS_VDS_PATH) and other required variables are set.")
+            sys.exit(f"Missing required env vars: {', '.join(missing)}. Please ensure WGS_ACAF_THRESHOLD_SPLIT_HAIL_PATH and other required variables are set.")
         self.bucket = self.env["WORKSPACE_BUCKET"].removeprefix("gs://")
         ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
         self.ts = ts
@@ -221,7 +221,7 @@ def main(cfg: Config) -> None:
         "--run_timestamp", cfg.ts,
         "--gcs_temp_dir", cfg.gcs_intermediate,
         "--gcs_hail_temp_dir", cfg.gcs_hail_tmp,
-        "--aou_input_mt_path", cfg.env["AOU_INPUT_MT_PATH"],
+        "--aou_input_mt_path", cfg.env["WGS_ACAF_THRESHOLD_SPLIT_HAIL_PATH"],
         "--flagged_samples_gcs_path", f"{cfg.env['CDR_STORAGE_PATH'].rstrip('/')}{FLAGGED_SAMPLES_FILE_SUFFIX}",
         "--base_cohort_mt_path_out", base_mt_gcs,
         "--wgs_ehr_ids_gcs_path_out", wgs_ehr_ids_gcs,
