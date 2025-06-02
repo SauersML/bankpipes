@@ -270,18 +270,19 @@ def import_weights_as_ht(gcs_ht_path: str, prs_id: str) -> hl.Table | None:
         return None
 
 
-def filter_vds_by_intervals(vds: hl.vds.VariantDataset, gcs_intervals_path: str, prs_id: str) -> hl.vds.VariantDataset | None:
-    """Filters VDS to loci within the specified intervals TSV file on GCS."""
-    if vds is None:
-        print(f"[{prs_id}] ERROR: Input VDS is None, cannot filter.")
+def filter_mt_by_intervals(mt: hl.MatrixTable, gcs_intervals_path: str, prs_id: str) -> hl.MatrixTable | None:
+    """Filters a MatrixTable to loci within the specified intervals TSV file on GCS."""
+    if mt is None:
+        print(f"[{prs_id}] ERROR: Input MT is None, cannot filter.")
         return None
     if not gcs_path_exists(gcs_intervals_path): # Use helper from utils
-        print(f"[{prs_id}] ERROR: Interval file missing at {gcs_intervals_path}, cannot filter VDS.")
+        print(f"[{prs_id}] ERROR: Interval file missing at {gcs_intervals_path}, cannot filter MT.")
         return None
 
-    print(f"[{prs_id}] Filtering VDS by PRS intervals from: {gcs_intervals_path}")
+    print(f"[{prs_id}] Filtering MT by PRS intervals from: {gcs_intervals_path}")
     try:
-        print(f"[{prs_id}] Importing locus intervals...")
+        n_variants_before = mt.count_rows()
+        print(f"[{prs_id}] Importing locus intervals... Original MT variant count: {n_variants_before}")
         locus_intervals = hl.import_locus_intervals(
             gcs_intervals_path,
             reference_genome='GRCh38',
@@ -290,30 +291,22 @@ def filter_vds_by_intervals(vds: hl.vds.VariantDataset, gcs_intervals_path: str,
         interval_count = locus_intervals.count()
         if interval_count == 0:
             print(f"[{prs_id}] WARNING: No valid intervals loaded from {gcs_intervals_path}. Filtering will likely remove all variants.")
-            # Proceeding will result in empty MT, which is handled later, but good to warn.
         else:
             print(f"[{prs_id}] Loaded {interval_count} intervals for filtering.")
 
-        print(f"[{prs_id}] Applying interval filter to VDS variant data...")
-        filtered_variant_data = hl.filter_intervals(vds.variant_data, locus_intervals)
-        
-        print(f"[{prs_id}] Applying interval filter to VDS reference data with split_reference_blocks=True...")
-        filtered_ref_data = hl.filter_intervals(
-            vds.reference_data, 
-            locus_intervals, 
-            split_reference_blocks=True # Ensure reference blocks are split for efficient densification
-        )
-        vds_filtered = hl.vds.VariantDataset(filtered_ref_data, filtered_variant_data)
+        print(f"[{prs_id}] Applying interval filter to MT...")
+        mt_filtered_by_intervals = hl.filter_intervals(mt, locus_intervals)
+        # No VDS specific logic (reference_data, split_reference_blocks) needed.
 
-        n_variants_after = vds_filtered.variant_data.count_rows() # Check rows in variant_data
-        print(f"[{prs_id}] VDS filtered to PRS intervals. Variants remaining in variant_data: {n_variants_after}\n")
+        n_variants_after = mt_filtered_by_intervals.count_rows()
+        print(f"[{prs_id}] MT filtered to PRS intervals. Variants remaining: {n_variants_after} (from {n_variants_before}).\n")
         if n_variants_after == 0:
-            print(f"[{prs_id}] WARNING: No variants remained in variant_data after interval filtering.")
+            print(f"[{prs_id}] WARNING: No variants remained in MT after interval filtering.")
             # This is a valid outcome if there's no overlap. Score computation will handle this.
 
-        return vds_filtered
+        return mt_filtered_by_intervals
     except Exception as e:
-        print(f"[{prs_id}] ERROR filtering VDS by intervals using {gcs_intervals_path}: {e}")
+        print(f"[{prs_id}] ERROR filtering MT by intervals using {gcs_intervals_path}: {e}")
         return None
 
 # --- DOSAGE CALCULATION FUNCTION ---
@@ -364,62 +357,41 @@ def calculate_effect_allele_dosage(mt_row):
 # --- END CORRECT DOSAGE CALCULATION FUNCTION ---
 
 
-def annotate_and_score(vds_filtered: hl.vds.VariantDataset, prs_ht: hl.Table, prs_id: str) -> hl.Table | None:
-    """Annotates filtered VDS/MT with PRS weights and computes scores using correct dosage."""
-    if vds_filtered is None or prs_ht is None:
-        print(f"[{prs_id}] Skipping annotation/computation: Filtered VDS or PRS HT is None.")
+def annotate_and_score(mt_for_scoring: hl.MatrixTable, prs_ht: hl.Table, prs_id: str) -> hl.Table | None:
+    """Annotates a dense MatrixTable with PRS weights and computes scores using correct dosage."""
+    if mt_for_scoring is None or prs_ht is None:
+        print(f"[{prs_id}] Skipping annotation/computation: Input MT or PRS HT is None.")
         return None
 
-    print(f"[{prs_id}] Annotating VDS with PRS info and computing scores...")
+    print(f"[{prs_id}] Annotating dense MT with PRS info and computing scores...")
     try:
-        # PRS HT is not empty before proceeding
-        if prs_ht.count() == 0: # This count can be slow if prs_ht is large and not persisted.
-                                 # Consider if this check is essential or can be deferred to after annotation.
+        if prs_ht.count() == 0:
             print(f"[{prs_id}] ERROR: Input PRS HailTable for annotation appears empty. Cannot annotate.")
-            # prs_ht.describe() # Log schema for debugging
             return None
 
-        # --- DENSIFY VDS TO MT ---
-        # This VDS is already filtered to ~1000 samples and PRS-specific intervals.
-        # truncate_reference_blocks (in prepare_base_vds) and split_reference_blocks=True (in filter_vds_by_intervals)
-        # are critical for making to_dense_mt efficient here.
-        print(f"[{prs_id}] Densifying VDS to MT for model scoring. Input VDS has {vds_filtered.variant_data.count_cols()} samples.")
-        try:
-            # Log partition info before densification for debugging potential performance issues
-            # print(f"[{prs_id}] VDS variant_data partitions: {vds_filtered.variant_data.n_partitions()}")
-            # print(f"[{prs_id}] VDS reference_data partitions: {vds_filtered.reference_data.n_partitions()}")
-            # print(f"[{prs_id}] VDS variant_data estimated row count: {vds_filtered.variant_data.estimated_size() / (vds_filtered.variant_data.entry.dtype.size * vds_filtered.variant_data.count_cols()) if vds_filtered.variant_data.count_cols() > 0 else 'N/A'}") # Very rough estimate
-            
-            mt = hl.vds.to_dense_mt(vds_filtered)
-        except Exception as e:
-            print(f"[{prs_id}] ERROR during hl.vds.to_dense_mt: {e}")
-            # Log details that might help diagnose:
-            print(f"[{prs_id}] Details of VDS at densification error time:")
-            print(f"[{prs_id}]   Variant data cols: {vds_filtered.variant_data.count_cols()}, rows: {vds_filtered.variant_data.count_rows()} (can be slow), partitions: {vds_filtered.variant_data.n_partitions()}")
-            print(f"[{prs_id}]   Reference data cols: {vds_filtered.reference_data.count_cols()}, rows: {vds_filtered.reference_data.count_rows()} (can be slow), partitions: {vds_filtered.reference_data.n_partitions()}")
-            # vds_filtered.variant_data.show(5)
-            # vds_filtered.reference_data.show(5)
-            return None 
-
-        n_variants_in_dense_mt = mt.count_rows()
-        if n_variants_in_dense_mt == 0:
-            print(f"[{prs_id}] WARNING: Dense MT has 0 rows after hl.vds.to_dense_mt. This means no variants from the PRS model intervals were found in the VDS for these samples, or all were reference sites.")
+        # mt_for_scoring is already the dense MT, no VDS densification needed.
+        n_variants_in_mt = mt_for_scoring.count_rows()
+        if n_variants_in_mt == 0:
+            print(f"[{prs_id}] WARNING: Input MT for scoring has 0 rows. No variants to score.")
             return None # No variants to score.
 
-        print(f"[{prs_id}] Dense MT created with {n_variants_in_dense_mt} variants and {mt.count_cols()} samples.")
-        print(f"[{prs_id}] Dense MT schema: entry: {mt.entry.dtype}, row: {mt.row.dtype}, col: {mt.col.dtype}")
+        print(f"[{prs_id}] Input MT for scoring has {n_variants_in_mt} variants and {mt_for_scoring.count_cols()} samples.")
+        print(f"[{prs_id}] MT schema: entry: {mt_for_scoring.entry.dtype}, row: {mt_for_scoring.row.dtype}, col: {mt_for_scoring.col.dtype}")
 
         # Ensure 'GT' field is present as expected by calculate_effect_allele_dosage
-        # hl.vds.to_dense_mt is expected to produce GT.
-        if 'GT' not in mt.entry:
-            print(f"[{prs_id}] FATAL ERROR: 'GT' field not found in dense MT after to_dense_mt. Entry schema: {mt.entry.dtype}")
-            # mt.describe() # For detailed debugging
+        if 'GT' not in mt_for_scoring.entry:
+            print(f"[{prs_id}] FATAL ERROR: 'GT' field not found in input MT. Entry schema: {mt_for_scoring.entry.dtype}")
             return None
-        # --- END DENSIFICATION ---
+        
+        # Ensure locus and alleles are present (expected from a standard MT)
+        if 'locus' not in mt_for_scoring.row or 'alleles' not in mt_for_scoring.row:
+            print(f"[{prs_id}] FATAL ERROR: 'locus' or 'alleles' not found in input MT row fields. Row schema: {mt_for_scoring.row.dtype}")
+            return None
 
         # Annotate rows with PRS info (effect allele, weight)
-        print(f"[{prs_id}] Annotating {n_variants_in_dense_mt} variants in dense MT with PRS info...")
-        mt = mt.annotate_rows(prs=prs_ht[mt.locus]) # mt.locus should exist from to_dense_mt
+        print(f"[{prs_id}] Annotating {n_variants_in_mt} variants in MT with PRS info...")
+        # Use mt_for_scoring directly where 'mt' was used previously.
+        mt = mt_for_scoring.annotate_rows(prs=prs_ht[mt_for_scoring.locus])
 
         # Filter to variants found in the PRS table (where annotation was successful and prs fields are defined)
         mt = mt.filter_rows(hl.is_defined(mt.prs) & hl.is_defined(mt.prs.weight) & hl.is_defined(mt.prs.effect_allele))
@@ -555,7 +527,7 @@ def main():
     parser = argparse.ArgumentParser(description="Process a single PRS model: download, prepare, filter, score, save.")
     parser.add_argument('--prs_id',                      required=True, help="PGS ID (e.g., PGS000123).")
     parser.add_argument('--prs_url',                     required=True, help="URL to the harmonized scoring file (txt.gz).")
-    parser.add_argument('--base_cohort_vds_path',        required=True, help="GCS path to the prepared base cohort VDS.")
+    parser.add_argument('--base_cohort_mt_path',        required=True, help="GCS path to the prepared base cohort dense MatrixTable (MT).")
     parser.add_argument('--gcs_temp_dir',                required=True, help="GCS base directory for intermediate checkpoints (weights, intervals).")
     parser.add_argument('--gcs_hail_temp_dir',          required=True, help="GCS temporary directory for Hail operations.")
     parser.add_argument('--run_timestamp',                required=True, help="Pipeline run timestamp for logging.")
@@ -651,35 +623,35 @@ def main():
         del score_df_prepared
         print(f"[{prs_id}] Intermediate file preparation complete.")
 
-    # --- Step 2: Load Base VDS ---
-    print(f"[{prs_id}] Loading base cohort VDS: {args.base_cohort_vds_path}")
+    # --- Step 2: Load Base MT ---
+    print(f"[{prs_id}] Loading base cohort MT: {args.base_cohort_mt_path}")
     try:
-        base_vds = hl.vds.read_vds(args.base_cohort_vds_path)
-        print(f"[{prs_id}] Base VDS loaded successfully.")
+        base_mt = hl.read_matrix_table(args.base_cohort_mt_path)
+        print(f"[{prs_id}] Base MT loaded successfully. Sample count: {base_mt.count_cols()}, Variant count: {base_mt.count_rows()}")
     except Exception as e:
-        print(f"[{prs_id}] FATAL: Failed to load base VDS from {args.base_cohort_vds_path}: {e}")
+        print(f"[{prs_id}] FATAL: Failed to load base MT from {args.base_cohort_mt_path}: {e}")
         sys.exit(1)
 
-    # --- Step 3: Filter VDS by Intervals ---
-    vds_filtered = filter_vds_by_intervals(base_vds, intermediate_intervals_gcs_path, prs_id)
-    if vds_filtered is None:
-        print(f"[{prs_id}] FATAL: VDS filtering failed.")
-        # Clean up base_vds from memory before exiting? Optional.
-        del base_vds
+    # --- Step 3: Filter MT by Intervals ---
+    mt_filtered_by_intervals = filter_mt_by_intervals(base_mt, intermediate_intervals_gcs_path, prs_id)
+    if mt_filtered_by_intervals is None:
+        print(f"[{prs_id}] FATAL: MT filtering by intervals failed.")
+        del base_mt # Clean up memory
         sys.exit(1)
-    del base_vds # Free memory
+    del base_mt # Free memory
 
     # --- Step 4: Load Prepared Weights into Hail ---
     prs_ht_for_annotation = import_weights_as_ht(intermediate_weights_gcs_path, prs_id)
     if prs_ht_for_annotation is None:
         print(f"[{prs_id}] FATAL: Failed to load weights into Hail.")
-        del vds_filtered # Clean up memory
+        del mt_filtered_by_intervals # Clean up memory
         sys.exit(1)
 
     # --- Step 5: Annotate and Compute Scores ---
-    prs_scores_ht_result = annotate_and_score(vds_filtered, prs_ht_for_annotation, prs_id)
+    # mt_filtered_by_intervals is already a dense MT.
+    prs_scores_ht_result = annotate_and_score(mt_filtered_by_intervals, prs_ht_for_annotation, prs_id)
     # Clean up inputs immediately after use
-    del vds_filtered
+    del mt_filtered_by_intervals
     del prs_ht_for_annotation
 
     if prs_scores_ht_result is None:
