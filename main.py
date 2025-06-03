@@ -134,12 +134,12 @@ class Config:
         self.pheno_name: str = pheno.get("target_name") or sys.exit("target_name missing")
         self.pheno_concept_ids: list[int] = pheno.get("concept_ids") or sys.exit("concept_ids missing")
         self.env = {k: os.getenv(k) for k in (
-            "GOOGLE_PROJECT", "WORKSPACE_BUCKET", "WGS_VDS_PATH",
+            "GOOGLE_PROJECT", "WORKSPACE_BUCKET", "WGS_ACAF_THRESHOLD_SPLIT_HAIL_PATH",
             "WORKSPACE_CDR", "CDR_STORAGE_PATH"
         )}
         if any(v is None for v in self.env.values()):
             missing = [k for k, v in self.env.items() if v is None]
-            sys.exit(f"Missing required env vars: {', '.join(missing)}")
+            sys.exit(f"Missing required env vars: {', '.join(missing)}. Please ensure WGS_ACAF_THRESHOLD_SPLIT_HAIL_PATH and other required variables are set.")
         self.bucket = self.env["WORKSPACE_BUCKET"].removeprefix("gs://")
         ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
         self.ts = ts
@@ -212,18 +212,18 @@ def main(cfg: Config) -> None:
     if rc:
         sys.exit("fetch_phenotypes failed")
 
-    # ── Step 2 – prepare_base_vds ──────────────────────────────────────────────
-    base_vds_gcs = f"{cfg.gcs_intermediate}/base_vds/base_cohort.vds"
-    wgs_ehr_ids_gcs = f"{cfg.gcs_intermediate}/base_vds/cohort_ids.csv"
+    # ── Step 2 – prepare_base_mt ──────────────────────────────────────────────
+    base_mt_gcs = f"{cfg.gcs_intermediate}/base_mt/base_cohort.mt"
+    wgs_ehr_ids_gcs = f"{cfg.gcs_intermediate}/base_mt/cohort_ids.csv"
     prep_args = [
-        PYTHON_EXECUTABLE, cfg.script_dir/"src"/"prepare_base_vds.py",
+        PYTHON_EXECUTABLE, cfg.script_dir/"src"/"prepare_base_mt.py",
         "--workspace_cdr", cfg.env["WORKSPACE_CDR"],
         "--run_timestamp", cfg.ts,
         "--gcs_temp_dir", cfg.gcs_intermediate,
         "--gcs_hail_temp_dir", cfg.gcs_hail_tmp,
-        "--wgs_vds_path", cfg.env["WGS_VDS_PATH"],
+        "--aou_input_mt_path", cfg.env["WGS_ACAF_THRESHOLD_SPLIT_HAIL_PATH"],
         "--flagged_samples_gcs_path", f"{cfg.env['CDR_STORAGE_PATH'].rstrip('/')}{FLAGGED_SAMPLES_FILE_SUFFIX}",
-        "--base_cohort_vds_path_out", base_vds_gcs,
+        "--base_cohort_mt_path_out", base_mt_gcs,
         "--wgs_ehr_ids_gcs_path_out", wgs_ehr_ids_gcs,
         "--target_phenotype_name", cfg.pheno_name,
         "--phenotype_cases_gcs_path_input", pheno_csv_gcs,
@@ -233,11 +233,11 @@ def main(cfg: Config) -> None:
         "--google_billing_project", cfg.env["GOOGLE_PROJECT"],
     ]
     if VDS_PREP_ENABLE_DOWNSAMPLING:
-        prep_args.append("--enable_downsampling_for_vds")
+        prep_args.append("--enable_downsampling_for_mt")
             
-    rc = _run_subprocess(prep_args, effective_env, log_dir/"02_prepare_vds.log", "prepare_base_vds")
+    rc = _run_subprocess(prep_args, effective_env, log_dir/"02_prepare_base_mt.log", "prepare_base_mt")
     if rc:
-        sys.exit("prepare_base_vds failed")
+        sys.exit("prepare_base_mt failed")
 
     # ── Step 3 – per-model work in parallel ───────────────────────────────────
     models = pd.read_csv(cfg.models_csv)
@@ -265,7 +265,7 @@ def main(cfg: Config) -> None:
                 PYTHON_EXECUTABLE, cfg.script_dir/"src"/"process_prs_model.py",
                 "--prs_id", m_id,
                 "--prs_url", m_url,
-                "--base_cohort_vds_path", base_vds_gcs,
+                "--base_cohort_mt_path", base_mt_gcs,
                 "--gcs_temp_dir", cfg.gcs_intermediate,
                 "--gcs_hail_temp_dir", cfg.gcs_hail_tmp,
                 "--run_timestamp", cfg.ts,
