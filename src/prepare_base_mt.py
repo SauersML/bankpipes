@@ -36,71 +36,91 @@ def parse_args():
 
 def load_aou_input_mt(path: str) -> hl.MatrixTable:
     """Loads the AoU input MatrixTable from the specified path."""
-    print(f"Loading AoU input MatrixTable from: {path}")
+    print(f"INFO: Starting load_aou_input_mt(). Path: {path}")
     try:
+        print(f"INFO: Calling hl.read_matrix_table('{path}')...")
         mt = hl.read_matrix_table(path)
+        print(f"INFO: hl.read_matrix_table() completed.")
         
+        print(f"INFO: Getting initial sample count for input MT...")
         num_cols = mt.count_cols() # Action
+        print(f"INFO: Getting initial variant count for input MT...")
         num_rows = mt.count_rows() # Action
         if num_cols == 0 or num_rows == 0:
             print(f"FATAL ERROR: Loaded MatrixTable from {path} appears to have 0 samples ({num_cols}) or 0 variants ({num_rows}).")
             sys.exit(1)
 
         print(f"INFO: Input AoU MatrixTable successfully loaded. Samples: {num_cols}, Variants: {num_rows}")
-        print(f"INFO: Input MT n_partitions: {mt.n_partitions()}") # Action
+        print(f"INFO: Getting initial partition count for input MT...")
+        num_partitions = mt.n_partitions() # Action
+        print(f"INFO: Input MT n_partitions: {num_partitions}")
         try:
-            # print(f"Initial MT entry schema: {mt.entry.dtype}\n") # Reduced verbosity
-            # print(f"Initial MT row schema: {mt.row.dtype}\n")
-            # print(f"Initial MT col schema: {mt.col.dtype}\n")
-        except Exception as schema_e:
-            print(f"Could not retrieve MT entry schema: {schema_e}\n")
+            # Schema printing is optional and for debugging, not critical for script flow.
+            # print(f"DEBUG: Initial MT entry schema: {mt.entry.dtype}\n") 
+            pass
+        except Exception as schema_e: 
+            print(f"WARNING: Could not retrieve MT entry schema details during initial load: {schema_e}\n")
+        print(f"INFO: Finished load_aou_input_mt(). Returning MT.")
         return mt
-    except Exception as e:
+    except Exception as e: # Catching HailUserError or other Hail-specific errors if they occur
+        print(f"FATAL ERROR: An critical error occurred during hl.read_matrix_table('{path}') or initial count operations.")
         if "requester_pays" in str(e).lower():
-            print(f"FATAL ERROR: Failed to load MatrixTable from {path} due to requester pays issue. Check Hail/Spark GCS connector config. Error: {e}")
+            print(f"DETAILS: This may be a requester pays issue. Ensure your Hail/Spark GCS connector is correctly configured. Error: {e}")
         else:
-            print(f"FATAL ERROR: Failed to load or verify MatrixTable from {path}: {e}")
+            print(f"DETAILS: {e}")
+        # Re-raise the original exception to allow Hail's error reporting to take over,
+        # or use sys.exit for a hard stop if preferred after logging.
+        # For this refinement, we'll let Hail's error propagate if it's a HailUserError.
+        # If it's a Python error not caught by Hail (less likely for read_matrix_table), then sys.exit might be desired.
+        # Given the FATAL print, sys.exit is reasonable here.
         sys.exit(1)
 
 def load_excluded_samples_ht(path: str, flagged_samples_gcs_path_default: str, fs_gcs) -> hl.Table | None:
-    """Loads the table of flagged/excluded samples, returning None if not found or on error."""
-    print(f"Importing flagged (related or excluded) samples from: {path}")
-    if not gcs_path_exists(path): 
-        error_message = f"ERROR: Flagged samples file not found or accessible at {path}. "
-        if path == flagged_samples_gcs_path_default:
-            error_message += "This is the default All of Us path. The file might have moved or permissions changed."
-        else:
-            error_message += "This is a custom path. Please check the path and permissions."
-        print(error_message)
-        print("CRITICAL INFO: Proceeding without relatedness/flagged sample filtering. This may impact analysis results.")
+    """
+    Loads the table of flagged/excluded samples.
+    Returns None if the file is not found (this is a recoverable state).
+    Exits if the file is found but fails to import, as this indicates a more serious issue.
+    """
+    print(f"INFO: Starting load_excluded_samples_ht(). Path: {path}")
+    if not gcs_path_exists(path):
+        # This is a defined, recoverable state: no exclusion file is fine.
+        print(f"INFO: No exclusion file found at {path}. Proceeding without exclusion list.")
+        print(f"INFO: Finished load_excluded_samples_ht().")
         return None
+    
+    # If the file *does* exist, we expect it to be a valid table.
+    # Failure to import an existing file is a more critical error.
+    print(f"INFO: Exclusion file found at {path}. Attempting to import...")
     try:
         ht = hl.import_table(path, key='sample_id', impute=True)
-        count = ht.count()
-        print(f"Flagged samples loaded. Count: {count}\n")
+        print(f"INFO: Imported exclusion table. Calling .count()...")
+        count = ht.count() # Action
+        print(f"INFO: Exclusion table loaded. Count: {count}")
         if count == 0:
             print("WARNING: Flagged samples table is empty.")
+        print(f"INFO: Finished load_excluded_samples_ht().")
         return ht
     except Exception as e:
-        print(f"ERROR: Failed to load flagged samples from {path}: {e}")
-        print("Proceeding without relatedness filtering due to load error.")
-        return None
+        # If hl.import_table fails for an existing file, this is likely a critical issue.
+        print(f"FATAL ERROR: Failed to import existing flagged samples table from {path}: {e}")
+        # Let Hail's error propagate or sys.exit. Given FATAL, sys.exit is reasonable.
+        sys.exit(1)
 
 def filter_samples_by_exclusion_list(
     mt: hl.MatrixTable, 
     excluded_ht: hl.Table | None, 
     id_column_name: str = 'sample_id'
 ) -> hl.MatrixTable:
-    print(f"[FILTER_EXCLUSION] Starting sample filtering. Initial MT sample count: {mt.count_cols()}.") # Action
+    print(f"INFO: Starting filter_samples_by_exclusion_list(). Initial MT sample count: {mt.count_cols()}, Partitions: {mt.n_partitions()}") # Actions
     
     if excluded_ht is None:
-        print("[FILTER_EXCLUSION] Exclusion table is None. Returning original MT.")
+        print(f"INFO: No valid exclusion list. Returning original MT.")
         return mt
 
     initial_excluded_count = excluded_ht.count() # Action
-    print(f"[FILTER_EXCLUSION] Exclusion table received with {initial_excluded_count} entries.")
+    print(f"INFO: Exclusion table received with {initial_excluded_count} entries.")
     if initial_excluded_count == 0:
-        print("[FILTER_EXCLUSION] Exclusion table is empty. Returning original MT.")
+        print(f"INFO: No valid exclusion list. Returning original MT.")
         return mt
 
     if id_column_name not in excluded_ht.row:
@@ -124,43 +144,37 @@ def filter_samples_by_exclusion_list(
         excluded_ht_rekeyed = excluded_ht_rekeyed.key_by(temp_s_col).rename({temp_s_col: 's'})
         print(f"[FILTER_EXCLUSION] Exclusion table converted to string, keyed by and key column renamed to 's'.")
 
-    print(f"[FILTER_EXCLUSION] Schema of re-keyed exclusion table: {excluded_ht_rekeyed.row.dtype}, Key: {list(excluded_ht_rekeyed.key.keys())}")
+    print(f"INFO: Schema of re-keyed exclusion table: {excluded_ht_rekeyed.row.dtype}, Key: {list(excluded_ht_rekeyed.key.keys())}")
     
-    print(f"[FILTER_EXCLUSION] Persisting re-keyed exclusion table...")
+    # Persisting is a performance optimization. If it fails, we can often continue, but log a warning.
+    print(f"INFO: Attempting to persist re-keyed exclusion table...")
     try:
         excluded_ht_rekeyed = excluded_ht_rekeyed.persist()
         count_after_persist = excluded_ht_rekeyed.count() # Action
-        print(f"[FILTER_EXCLUSION] Re-keyed exclusion table persisted. Count: {count_after_persist}.")
-        if initial_excluded_count != count_after_persist:
-            print(f"[FILTER_EXCLUSION] WARNING: Count mismatch after persist. Before: {initial_excluded_count}, After: {count_after_persist}")
+        print(f"INFO: Persisted re-keyed exclusion table. Partitions: {excluded_ht_rekeyed.n_partitions()}, Count: {count_after_persist}.") # Action
+        if initial_excluded_count != count_after_persist: # This is a data integrity check, good to keep.
+            print(f"WARNING: Count mismatch after persist for exclusion table. Before: {initial_excluded_count}, After: {count_after_persist}")
     except Exception as e:
-        print(f"[FILTER_EXCLUSION] ERROR during persist: {e}. Continuing without persisted table.")
+        print(f"WARNING: Could not persist re-keyed exclusion table: {e}. This might impact performance, but proceeding with filtering.")
 
+    # Core Hail operation: filter_cols. Errors here should propagate unless there's a specific recovery.
     mt_initial_cols = mt.count_cols() # Action
-    print(f"[FILTER_EXCLUSION] Filtering MT (samples: {mt_initial_cols}, partitions: {mt.n_partitions()})...")
-    try:
-        if mt.s.dtype != hl.tstr:
-            print(f"[FILTER_EXCLUSION] WARNING: MT 's' column is not string ({mt.s.dtype}). This might cause issues if exclusion keys are strings.")
-        # The anti_join_cols variant:
-        # filtered_mt = mt.filter_cols(hl.is_missing(excluded_ht_rekeyed[mt.s]))
-        # Using anti_join_cols might be more explicit or performant in some Hail versions for this pattern.
-        # However, filter_cols with is_missing is idiomatic. Let's stick to is_missing for now.
-        filtered_mt = mt.filter_cols(hl.is_missing(excluded_ht_rekeyed[mt.s]))
-        
-        mt_cols_after_filter = filtered_mt.count_cols() # Action
-        print(f"[FILTER_EXCLUSION] MT filtered. Samples remaining: {mt_cols_after_filter}. Partitions: {filtered_mt.n_partitions()}.")
-    except Exception as e:
-        print(f"[FILTER_EXCLUSION] ERROR filtering MT: {e}")
-        raise
+    print(f"INFO: Applying exclusion filter to MT columns (anti-join)... Initial MT samples: {mt_initial_cols}, Partitions: {mt.n_partitions()}") # Action
+    if mt.s.dtype != hl.tstr: # Pre-condition check, not a try-except.
+        print(f"WARNING: MT 's' column is not string ({mt.s.dtype}). This might cause issues if exclusion keys are strings.")
+    filtered_mt = mt.filter_cols(hl.is_missing(excluded_ht_rekeyed[mt.s])) # Let Hail errors propagate.
+    
+    mt_cols_after_filter = filtered_mt.count_cols() # Action
+    print(f"INFO: Exclusion filter applied. Filtered MT sample count: {mt_cols_after_filter}, Partitions: {filtered_mt.n_partitions()}") # Actions
 
-    print(f"[FILTER_EXCLUSION] New MatrixTable created. Final sample count: {mt_cols_after_filter}.")
+    print(f"INFO: Finished filter_samples_by_exclusion_list().")
     return filtered_mt
 
 @cache_result("wgs_ehr_samples_df") 
 def get_wgs_ehr_samples_df(cdr_env_var_value: str, prs_id=None) -> pd.DataFrame:
     get_cache_dir() 
-    print("Retrieving WGS+EHR samples from BigQuery...")
-    if not cdr_env_var_value:
+    print(f"INFO: Starting get_wgs_ehr_samples_df(). CDR: {cdr_env_var_value}")
+    if not cdr_env_var_value: # This is a logical check, not a try-except for a library call.
         print(f"FATAL ERROR: Workspace CDR value not provided.")
         sys.exit(1)
 
@@ -174,20 +188,22 @@ def get_wgs_ehr_samples_df(cdr_env_var_value: str, prs_id=None) -> pd.DataFrame:
         AND has_whole_genome_variant = 1
     )
     """
-    print("Executing BQ query for WGS+EHR samples.")
-    try:
+    print("INFO: Executing BigQuery query for WGS+EHR samples...")
+    try: # This try-except is for an external library call (pandas_gbq)
         df = pd.read_gbq(wgs_ehr_query, dialect='standard', progress_bar_type=None)
-        n_found = df['person_id'].nunique()
-        print(f"WGS+EHR query completed. Found {n_found} unique persons.\n")
-        if df.empty:
+        n_found = df['person_id'].nunique() # Action
+        print(f"INFO: BigQuery for WGS+EHR samples completed. Found {n_found} unique persons.")
+        if df.empty: # Logical check based on query result.
             print("FATAL ERROR: No samples found with both WGS and EHR data from BigQuery. Cannot proceed.")
             sys.exit(1)
+        print(f"INFO: Finished get_wgs_ehr_samples_df().")
         return df
-    except Exception as e:
-        print(f"FATAL ERROR: Failed to query BigQuery for WGS+EHR samples: {e}")
+    except Exception as e: # Catching errors from pandas_gbq or subsequent pandas ops.
+        print(f"FATAL ERROR: Failed to query BigQuery for WGS+EHR samples or process results: {e}")
         sys.exit(1)
 
 def save_sample_ids_to_gcs(df: pd.DataFrame, gcs_path: str, fs_gcs):
+    # These are logical pre-condition checks, not try-excepts for library calls.
     if df is None or df.empty:
         print("FATAL ERROR: Cannot save sample IDs DataFrame as it is None or empty.")
         sys.exit(1)
@@ -195,22 +211,22 @@ def save_sample_ids_to_gcs(df: pd.DataFrame, gcs_path: str, fs_gcs):
         print(f"FATAL ERROR: DataFrame to be saved to {gcs_path} must contain a 'person_id' column.")
         sys.exit(1)
 
-    print(f"Storing sample IDs (column: 'person_id') to GCS: {gcs_path}")
-    try:
+    print(f"INFO: Storing sample IDs (column: 'person_id') to GCS: {gcs_path}")
+    try: # This try-except is for I/O operations.
         parent_dir = os.path.dirname(gcs_path)
-        if not gcs_path_exists(parent_dir): # fs_gcs is not passed here, gcs_path_exists will use global or re-init
-             print(f"Creating GCS directory: {parent_dir}")
-             # fs_gcs should be used if available and appropriate
-             fs_gcs.mkdirs(parent_dir, exist_ok=True) # fs_gcs passed to parent function
+        if not gcs_path_exists(parent_dir):
+             print(f"INFO: Creating GCS directory: {parent_dir}")
+             fs_gcs.mkdirs(parent_dir, exist_ok=True)
              
-        with fs_gcs.open(gcs_path, 'w') as f: # fs_gcs passed to parent function
+        with fs_gcs.open(gcs_path, 'w') as f:
             df[['person_id']].to_csv(f, index=False)
-        print("Sample IDs saved successfully.\n")
-    except Exception as e:
+        print("INFO: Sample IDs saved successfully.\n")
+    except Exception as e: # Catching errors from GCS I/O or pandas .to_csv().
         print(f"FATAL ERROR: Failed to save sample IDs to {gcs_path}: {e}")
         sys.exit(1)
 
 def filter_mt_to_sample_list(mt: hl.MatrixTable, sample_ids_gcs_path: str, fs_gcs) -> hl.MatrixTable:
+    # Logical pre-condition checks.
     if mt is None:
         print("FATAL ERROR: MatrixTable is None, cannot filter to sample list.")
         sys.exit(1)
@@ -218,49 +234,45 @@ def filter_mt_to_sample_list(mt: hl.MatrixTable, sample_ids_gcs_path: str, fs_gc
         print("FATAL ERROR: Sample IDs GCS path is None or empty, cannot filter MatrixTable.")
         sys.exit(1)
 
-    print(f"Importing sample list from {sample_ids_gcs_path} for MT filtering...")
+    print(f"INFO: Importing sample list from {sample_ids_gcs_path} for MT filtering...")
+    # Try-except for file import is reasonable as it's an I/O op that can fail for many reasons.
     try:
-        if not gcs_path_exists(sample_ids_gcs_path): # fs_gcs not used here
+        if not gcs_path_exists(sample_ids_gcs_path): 
             print(f"FATAL ERROR: Sample IDs file not found at {sample_ids_gcs_path}")
             sys.exit(1)
-
         ids_ht = hl.import_table(sample_ids_gcs_path, delimiter=',', key='person_id', types={'person_id': hl.tstr})
-        
-        if ids_ht.count() == 0: # Action
+        if ids_ht.count() == 0: # Action; This is a logical check on data content.
             print(f"FATAL ERROR: Imported sample ID HailTable from {sample_ids_gcs_path} is empty. Cannot filter MT.")
             sys.exit(1)
+    except Exception as e: # Catching errors from hl.import_table or .count()
+        print(f"FATAL ERROR: Failed to import or count sample IDs from {sample_ids_gcs_path}: {e}")
+        sys.exit(1) 
 
-        # Check if MT 's' col key is already string. If not, warn.
-        # AoU MTs are expected to have 's' as string.
-        if mt.s.dtype != hl.tstr:
-             print(f"WARNING: Input MT sample key 's' is of type {mt.s.dtype}, not string. Ensure this is compatible with sample ID list format.")
-        
-        ids_ht_keyed = ids_ht.key_by(s=ids_ht.person_id) # Ensure key is 's' for joining with MT
+    # Core Hail operation: semi_join_cols. Errors here should propagate.
+    if mt.s.dtype != hl.tstr: # Pre-condition check.
+         print(f"WARNING: Input MT sample key 's' is of type {mt.s.dtype}, not string. Ensure this is compatible with sample ID list format.")
+    ids_ht_keyed = ids_ht.key_by(s=ids_ht.person_id) 
 
-        print("Filtering MT to sample list...")
-        # Use semi_join_cols to keep only columns present in ids_ht_keyed
-        subset_mt = mt.semi_join_cols(ids_ht_keyed)
+    print("INFO: Filtering MT to sample list using semi_join_cols...")
+    subset_mt = mt.semi_join_cols(ids_ht_keyed) # Let Hail errors propagate.
 
-        n_after_filter = subset_mt.count_cols() # Action
-        print(f"MT filtered to sample list. Final count: {n_after_filter}\n")
-        if n_after_filter == 0:
-             print(f"FATAL ERROR: Filtering MT to sample list from {sample_ids_gcs_path} resulted in 0 samples remaining.")
-             sys.exit(1)
-        return subset_mt
-    except Exception as e:
-        print(f"FATAL ERROR: Failed filtering MT to sample list: {e}")
-        sys.exit(1)
+    n_after_filter = subset_mt.count_cols() # Action
+    print(f"INFO: MT filtered to sample list. Final count: {n_after_filter}\n")
+    if n_after_filter == 0: # Logical check on result.
+         print(f"FATAL ERROR: Filtering MT to sample list from {sample_ids_gcs_path} resulted in 0 samples remaining.")
+         sys.exit(1)
+    return subset_mt
 
 def load_phenotype_cases_from_csv(gcs_path: str, fs_gcs) -> pd.DataFrame:
-    print(f"Loading phenotype case data from CSV: {gcs_path}")
-    # fs_gcs not used here for exists check
-    if not gcs_path_exists(gcs_path):
+    print(f"INFO: Loading phenotype case data from CSV: {gcs_path}")
+    if not gcs_path_exists(gcs_path): # Pre-condition I/O check.
         print(f"FATAL ERROR: Phenotype cases CSV file not found at {gcs_path}")
         sys.exit(1)
-    try:
-        with fs_gcs.open(gcs_path, 'r') as f: # fs_gcs used here
+    try: # Try-except for file I/O and pandas parsing.
+        with fs_gcs.open(gcs_path, 'r') as f:
             df = pd.read_csv(f)
         
+        # Logical checks on DataFrame content.
         required_cols = ['s', 'phenotype_status']
         if not all(col in df.columns for col in required_cols):
              print(f"FATAL ERROR: Phenotype cases CSV {gcs_path} must contain columns: {required_cols}. Found: {df.columns.tolist()}")
@@ -269,12 +281,12 @@ def load_phenotype_cases_from_csv(gcs_path: str, fs_gcs) -> pd.DataFrame:
         df['s'] = df['s'].astype(str)
         df['phenotype_status'] = df['phenotype_status'].astype(int)
         
-        print(f"Successfully loaded {len(df)} entries from phenotype cases CSV.")
+        print(f"INFO: Successfully loaded {len(df)} entries from phenotype cases CSV.")
         cases_df = df[df['phenotype_status'] == 1].copy()
-        print(f"Identified {len(cases_df)} cases from the CSV.")
+        print(f"INFO: Identified {len(cases_df)} cases from the CSV.")
         return cases_df
         
-    except Exception as e:
+    except Exception as e: # Catching errors from I/O or pandas operations.
         print(f"FATAL ERROR loading phenotype cases CSV from {gcs_path}: {e}")
         sys.exit(1)
 
@@ -299,33 +311,38 @@ def main():
     base_cohort_mt = None 
     # OLD_TRUNCATED_VDS_CHECKPOINT_PATH is no longer relevant for MTs.
 
-    if hail_path_exists(args.base_cohort_mt_path_out, project_id_for_billing=args.google_billing_project): 
-        print(f"[CHECKPOINT] Found potential Base Cohort MT directory at: {args.base_cohort_mt_path_out}")
+    if hail_path_exists(args.base_cohort_mt_path_out, project_id_for_billing=args.google_billing_project):
+        print(f"INFO: Potential checkpoint found at {args.base_cohort_mt_path_out}. Attempting to read...")
         try:
-            print("Attempting to read MT checkpoint...")
             base_cohort_mt = hl.read_matrix_table(args.base_cohort_mt_path_out)
+            # Perform critical post-load checks. If these fail, treat checkpoint as invalid.
             n_samples = base_cohort_mt.count_cols() # Action
             n_variants = base_cohort_mt.count_rows() # Action
-            print(f"Sanity check on loaded MT: Found {n_samples} samples and {n_variants} variants.")
-            if n_samples > 0 and n_variants > 0: # Ensure MT is not empty
-                print("[CHECKPOINT HIT] Successfully loaded and verified MT checkpoint.\n")
+            if n_samples > 0 and n_variants > 0:
+                print(f"INFO: Checkpoint successfully loaded and verified. Samples: {n_samples}, Variants: {n_variants}, Partitions: {base_cohort_mt.n_partitions()}.") # Action
+                # base_cohort_mt is now considered valid.
             else:
-                print(f"[CHECKPOINT CORRUPTED/EMPTY] Loaded MT has 0 samples or 0 variants. Samples: {n_samples}, Variants: {n_variants}. Assuming invalid.")
-                base_cohort_mt = None # Force regeneration
-                print(f"Attempting to delete corrupted/empty MT checkpoint at {args.base_cohort_mt_path_out}")
-                if not delete_gcs_path(args.base_cohort_mt_path_out, project_id_for_billing=args.google_billing_project, recursive=True):
-                     print(f"WARNING: Failed to delete corrupted/empty MT checkpoint at {args.base_cohort_mt_path_out}")
-        except Exception as e:
-            error_message = str(e)
-            print(f"[CHECKPOINT LOAD FAILED] Failed to read MT from {args.base_cohort_mt_path_out}. Error: {error_message}")
-            base_cohort_mt = None # Force regeneration
-            print(f"Attempting to delete MT checkpoint at {args.base_cohort_mt_path_out} due to read error.")
-            if not delete_gcs_path(args.base_cohort_mt_path_out, project_id_for_billing=args.google_billing_project, recursive=True):
-                 print(f"WARNING: Failed to delete MT checkpoint at {args.base_cohort_mt_path_out} after read error.")
+                print(f"WARNING: Checkpoint at {args.base_cohort_mt_path_out} is empty or corrupted (Samples: {n_samples}, Variants: {n_variants}). Will attempt to regenerate.")
+                base_cohort_mt = None # Invalidate checkpoint
+                # Attempt to delete the invalid checkpoint to prevent issues on retry.
+                if delete_gcs_path(args.base_cohort_mt_path_out, project_id_for_billing=args.google_billing_project, recursive=True):
+                    print(f"INFO: Successfully deleted invalid/empty checkpoint at {args.base_cohort_mt_path_out}.")
+                else:
+                    print(f"WARNING: Failed to delete invalid/empty checkpoint at {args.base_cohort_mt_path_out}.")
+        except Exception as e: # Catching errors specifically from hl.read_matrix_table or subsequent .count calls
+            print(f"WARNING: Failed to read or verify existing checkpoint from {args.base_cohort_mt_path_out}. Error: {e}. Will attempt to regenerate.")
+            base_cohort_mt = None # Invalidate checkpoint
+            # Attempt to delete the problematic checkpoint.
+            if delete_gcs_path(args.base_cohort_mt_path_out, project_id_for_billing=args.google_billing_project, recursive=True):
+                print(f"INFO: Successfully deleted problematic checkpoint at {args.base_cohort_mt_path_out} after read failure.")
+            else:
+                print(f"WARNING: Failed to delete problematic checkpoint at {args.base_cohort_mt_path_out} after read failure.")
+    else:
+        print(f"INFO: No checkpoint found at {args.base_cohort_mt_path_out}. MT will be generated.")
 
     # If, after all checks, base_cohort_mt is still None, it means we need to generate it.
     if base_cohort_mt is None:
-        print(f"[DECISION] Base Cohort MT needs to be generated/regenerated at {args.base_cohort_mt_path_out}.")
+        print(f"INFO: Proceeding with MT generation at {args.base_cohort_mt_path_out}.")
 
         # --- AGGRESSIVE AUTO-DELETION OF OLD/BAD STUFF BEFORE REGENERATION ---
         print("INFO: Preparing for MT regeneration. Ensuring target path is clear...")
@@ -483,33 +500,42 @@ def main():
         print(f"INFO: Final MT prepared. Samples: {num_samples_in_mt}, Variants: {num_variants_final_mt}.")
         print(f"INFO: Final partitions: {final_repartitioned_mt.n_partitions()} (row partitions)")
 
-        print(f"INFO: Writing final prepared Base Cohort MT to: {args.base_cohort_mt_path_out}")
-        try:
-            final_repartitioned_mt.write(args.base_cohort_mt_path_out, overwrite=True) 
-            print("INFO: Base Cohort MT checkpoint successfully written.")
+        print(f"INFO: Starting final write of final_repartitioned_mt to {args.base_cohort_mt_path_out}. Partitions to write: {final_repartitioned_mt.n_partitions()}") # Action
+        # Core Hail write operation. Errors here should generally propagate.
+        # A try-except might be justified if there's a specific cleanup action for a failed write
+        # that isn't already handled by Hail's error mechanisms or higher-level pipeline tools.
+        # For now, assume direct call is fine and errors will propagate.
+        final_repartitioned_mt.write(args.base_cohort_mt_path_out, overwrite=True) 
+        print(f"INFO: Base Cohort MT checkpoint successfully written to {args.base_cohort_mt_path_out}.")
 
-            print("INFO: Verifying written MT checkpoint...")
+        print("INFO: Verifying written MT checkpoint...")
+        # Verification is critical. If this fails, the written MT is not usable.
+        try:
             mt_check = hl.read_matrix_table(args.base_cohort_mt_path_out)
             mt_check_sample_count = mt_check.count_cols() # Action
             mt_check_variant_count = mt_check.count_rows() # Action
-            mt_check_partitions = mt_check.n_partitions()
+            mt_check_partitions = mt_check.n_partitions() # Action
             print(f"INFO: MT checkpoint verified. Sample count: {mt_check_sample_count}, Variant count: {mt_check_variant_count}, Partitions: {mt_check_partitions}")
             
+            # These are logical data integrity checks, not exception handling.
             if mt_check_sample_count != num_samples_in_mt:
                  print(f"WARNING: Sample count mismatch in final MT checkpoint! Expected {num_samples_in_mt}, got {mt_check_sample_count}")
             if mt_check_variant_count != num_variants_final_mt:
                  print(f"WARNING: Variant count mismatch in final MT checkpoint! Expected {num_variants_final_mt}, got {mt_check_variant_count}")
-            if mt_check_partitions != final_repartitioned_mt.n_partitions(): # Check against actual final partitions
+            if mt_check_partitions != final_repartitioned_mt.n_partitions():
                  print(f"WARNING: MT partition count ({mt_check_partitions}) differs from expected ({final_repartitioned_mt.n_partitions()}).")
             del mt_check
         except Exception as e:
-            print(f"ERROR: Failed to write or verify final Base Cohort MT checkpoint: {e}")
-            sys.exit(1) 
+            # If verification fails, the pipeline should stop.
+            print(f"FATAL ERROR: Failed to read or verify the newly written MT checkpoint at {args.base_cohort_mt_path_out}: {e}")
+            # Consider attempting to delete the corrupted checkpoint here if desired.
+            sys.exit(1)
         
         # Unpersist the final MT after it has been written and verified.
-        if hasattr(final_repartitioned_mt, '_persisted') and final_repartitioned_mt._persisted:
-            print(f"INFO: Unpersisting final_repartitioned_mt (which is current_base_mt).")
+        if hasattr(final_repartitioned_mt, '_persisted') and final_repartitioned_mt._persisted: # Check if it was indeed persisted
+            print(f"INFO: Unpersisting final_repartitioned_mt (which is the consolidated current_base_mt)...")
             final_repartitioned_mt.unpersist()
+            print(f"INFO: Unpersist called for final_repartitioned_mt.")
 
         print("--- Base MT Generation Finished ---")
         base_cohort_mt = final_repartitioned_mt 
@@ -518,11 +544,12 @@ def main():
         # final sample ID extraction if needed, which doesn't require persisted state for cols().select('s').
 
     if base_cohort_mt is None:
-        print(f"FATAL ERROR: Final Base Cohort MT at {args.base_cohort_mt_path_out} has 0 samples.")
+        # This case should ideally be caught earlier if generation failed and base_cohort_mt remained None.
+        print(f"FATAL ERROR: base_cohort_mt is None before final sample ID saving. This indicates a logic error or earlier unhandled failure.")
         if hail_path_exists(args.base_cohort_mt_path_out, project_id_for_billing=args.google_billing_project):
             delete_gcs_path(args.base_cohort_mt_path_out, project_id_for_billing=args.google_billing_project, recursive=True)
         sys.exit(1)
-    print(f"INFO: Base Cohort MT at {args.base_cohort_mt_path_out} is ready with {final_sample_count} samples.\n")
+    # final_sample_count should be defined if base_cohort_mt is not None from checkpoint or generation.
 
     df_to_save_ids = None
     if 'final_ids_for_mt_df' not in locals() or final_ids_for_mt_df is None or final_ids_for_mt_df.empty:
